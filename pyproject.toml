@@ -1,0 +1,30 @@
+[project]
+name = "aicte-caseconnect"
+version = "0.1.0"
+description = "AICTE CaseConnect backend foundation (synthetic demonstration prototype)"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.14,<2",
+  "bcrypt>=4.0,<4.1",
+  "fastapi>=0.115,<1",
+  "passlib[bcrypt]>=1.7.4,<2",
+  "pydantic-settings>=2.6,<3",
+  "psycopg[binary]>=3.2,<4",
+  "PyJWT>=2.10,<3",
+  "email-validator>=2.2,<3",
+  "sqlalchemy>=2.0,<2.1",
+  "uvicorn[standard]>=0.32,<1",
+]
+
+[dependency-groups]
+dev = ["httpx>=0.28,<1", "pytest>=8.3,<9", "ruff>=0.8,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+ignore = ["B008"]

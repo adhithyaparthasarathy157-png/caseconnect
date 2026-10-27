@@ -1,0 +1,1 @@
+"""AICTE CaseConnect application package."""
