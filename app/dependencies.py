@@ -41,6 +41,8 @@ def can_view_case(user: User, case: Case) -> bool:
     if user.role == Role.REGIONAL_OFFICER:
         regions = _regions(user)
         return "all" in regions or case.institution.region.lower() in regions
+    if user.role == Role.INSTITUTION_REPRESENTATIVE:
+        return user.institution_id is not None and case.institution_id == user.institution_id
     return user.bureau_id in {case.current_bureau_id, case.originating_bureau_id}
 
 
@@ -48,6 +50,8 @@ def can_modify_case(user: User, case: Case) -> bool:
     if user.role in {Role.ADMIN, Role.COMPETENT_AUTHORITY}:
         return True
     if user.role == Role.SENIOR_MANAGEMENT:
+        return False
+    if user.role == Role.INSTITUTION_REPRESENTATIVE:
         return False
     if user.role == Role.REGIONAL_OFFICER:
         regions = _regions(user)

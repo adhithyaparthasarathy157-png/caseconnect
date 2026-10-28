@@ -156,3 +156,62 @@ institution profile, analytics, CSV export, coordination, and alerts, while
 preserving the 40-case/20-institution synthetic demo. Browser automation and
 external AICTE/PostgreSQL/notification services remain unavailable and are not
 claimed. See [block5-final-verification.md](block5-final-verification.md).
+
+## Cases dashboard and date-only receipt repair (2026-10-28)
+
+The receipt form previously required `datetime-local` input and converted it to
+UTC, while the frontend retained case detail only in memory after search or
+creation. The repair adds `cases.receipt_date` through migration
+`d5e6f7a8b9c0`, backfills all 40 existing synthetic records, and retains the
+historical `receipt_at` field for legacy analytics. New API intake accepts a
+date-only `receipt_date` and the UI sends ISO `YYYY-MM-DD`/renders
+`DD-MM-YYYY`, without constructing a receipt timestamp from a browser timezone.
+
+The Cases dashboard now has readable case columns, explicit open actions,
+search by Case ID, direct `/cases/{case_id}` SPA navigation, a simpler form
+with optional details collapsed, and post-create navigation to the persisted
+case. The suite now collects 27 tests. Isolated regression groups passed: 16
+tests (`test_api.py`, `test_block4.py`), then 15 tests (`test_block2.py`,
+`test_block3.py`, `test_block4.py`, `test_isolation.py`), with Block 4
+intentionally rerun in both groups; the final receipt-boundary test also
+passed. Lint, compilation,
+frontend build, fresh migration, and Alembic drift checks passed. A read-only
+live API check returned 40 cases, an ISO receipt date, successful case context,
+and an exact Case-ID search total of one. Direct Vite case URL returned HTTP
+200. Browser interaction automation remains unavailable.
+
+## Institution Representative portal implementation and verification (2026-10-28)
+
+An Institution User Portal was added alongside the existing Admin Portal, reusing
+the unified backend, authentication, database, and case workflows:
+
+- **Database & Migration:** Migration `e1f2a3b4c5d6` added `users.institution_id`
+  (foreign key to `institutions.id`), an index `ix_users_institution_id`, and
+  seeded synthetic representative `institution.rep@demo.example.com` linked to
+  institution 1 (`DEMO-AICTE-0001`). Head is confirmed at `e1f2a3b4c5d6`.
+- **Server-Side Security & Scope:** `can_view_case` and `can_create_for_bureaus`
+  enforce strict institution scoping. Representatives can only view and create
+  cases for their assigned institution. Direct API access to other institutions'
+  cases returns HTTP 403 or 404.
+- **Intake Resolution:** Application submission via `/api/cases` does not rely on
+  client-supplied IDs; `institution_id` is resolved from `user.institution_id`
+  and the originating bureau resolves to `user.bureau_id` with a database fallback
+  to the configured intake bureau.
+- **Frontend Workspaces:** A landing page at `/` provides separate paths to
+  Admin Login (`/admin/login`) and Institution User Login (`/institution/login`).
+  The Institution Portal provides tabs for Overview, My Applications, Application
+  Detail with event timeline and alerts, Submit Application, Alerts & Action Required,
+  and Institution Profile.
+- **Test Evidence:** A dedicated test suite `tests/test_portal.py` contains 14
+  isolated tests covering login, unauthorized rejection, overview metrics,
+  application submission without client-provided IDs, forgery prevention,
+  cross-institution isolation, detail retrieval, unassigned rep rejection, and
+  alerts. All 14 passed.
+- **Regression Suite:** Total test count is now 42 tests. Full test suite ran in
+  isolated serial groups with 42/42 passing (16 in Group 1, 12 in Group 2, 14 in
+  Group 3).
+- **Static & Build Checks:** `uv run ruff check .` passed with 0 errors. Python
+  compilation passed. Frontend build (`tsc -b && vite build`) succeeded with 0 errors.
+- **Live Demo Preservation:** Preserved 40 synthetic cases and 20 synthetic
+  institutions. Both Admin and Institution Rep authenticated and retrieved live
+  records. Admin dashboard metrics and reports export remain fully functional.

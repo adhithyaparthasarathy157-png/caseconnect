@@ -18,6 +18,7 @@ from app.schemas import (
     InstitutionRelatedCoordination,
     InstitutionRelatedOverlap,
     InstitutionUpdate,
+    UserPublic,
 )
 from app.services import normalize_name
 
@@ -39,7 +40,11 @@ def list_institutions(search: str | None = None, permanent_id: str | None = None
     query = select(Institution)
     if search:
         needle = f"%{search.strip()}%"
-        query = query.where(or_(Institution.name.ilike(needle), Institution.normalized_name.ilike(needle)))
+        query = query.where(or_(
+            Institution.name.ilike(needle),
+            Institution.normalized_name.ilike(needle),
+            Institution.permanent_id.ilike(needle),
+        ))
     if permanent_id:
         query = query.where(Institution.permanent_id == " ".join(permanent_id.split()).upper())
     if region:
@@ -101,7 +106,24 @@ def institution_profile(institution_id: int, db: Session = Depends(get_db), user
         if can_view_case(user, request.requesting_case) and can_view_case(user, request.receiving_case)
     ]
     base = InstitutionPublic.model_validate(institution).model_dump()
-    return InstitutionProfile(**base, total_cases=len(cases), cases_by_status=dict(Counter(case.status.value for case in cases)), cases=[CasePublic.model_validate(case) for case in cases], related_overlaps=related, related_coordination=related_coordination)
+    accounts = list(db.scalars(select(User).where(User.institution_id == institution.id)).all())
+    return InstitutionProfile(
+        **base,
+        total_cases=len(cases),
+        cases_by_status=dict(Counter(case.status.value for case in cases)),
+        cases=[CasePublic.model_validate(case) for case in cases],
+        related_overlaps=related,
+        related_coordination=related_coordination,
+        accounts=[UserPublic.model_validate(u) for u in accounts],
+    )
+
+
+@router.get("/{institution_id}/accounts", response_model=list[UserPublic])
+def institution_accounts(institution_id: int, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> list[User]:
+    institution = get_institution_or_404(db, institution_id)
+    if user.role == Role.REGIONAL_OFFICER and (user.region_scope or "").upper() not in {"ALL", institution.region.upper()}:
+        raise HTTPException(status_code=403, detail="Institution is outside your regional scope")
+    return list(db.scalars(select(User).where(User.institution_id == institution.id)).all())
 
 
 @router.post("", response_model=InstitutionPublic, status_code=status.HTTP_201_CREATED)

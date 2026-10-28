@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
@@ -6,9 +6,10 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
 from app.dependencies import can_modify_case, can_view_case, get_current_user
-from app.enums import CaseStatus
+from app.enums import CaseStatus, Role
 from app.models import (
     Alert,
+    Bureau,
     Case,
     CaseEvent,
     CoordinationRequest,
@@ -44,7 +45,7 @@ def get_case_or_404(db: Session, case_id: str) -> Case:
 def list_cases(institution_id: int | None = None, permanent_id: str | None = None, case_id: str | None = None,
                bureau_id: int | None = None, region: str | None = None, category: str | None = None,
                case_status: CaseStatus | None = Query(default=None, alias="status"), assigned_officer_id: int | None = None,
-               receipt_from: datetime | None = None, receipt_to: datetime | None = None, page: int = Query(1, ge=1),
+               receipt_from: date | None = None, receipt_to: date | None = None, page: int = Query(1, ge=1),
                page_size: int = Query(20, ge=1, le=100), db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> PaginatedCases:
     query = select(Case).join(Institution).options(selectinload(Case.institution))
     if institution_id is not None: query = query.where(Case.institution_id == institution_id)
@@ -55,9 +56,9 @@ def list_cases(institution_id: int | None = None, permanent_id: str | None = Non
     if category: query = query.where(Case.category == category)
     if case_status: query = query.where(Case.status == case_status)
     if assigned_officer_id is not None: query = query.where(Case.assigned_officer_id == assigned_officer_id)
-    if receipt_from: query = query.where(Case.receipt_at >= receipt_from)
-    if receipt_to: query = query.where(Case.receipt_at <= receipt_to)
-    candidates = list(db.scalars(query.order_by(Case.receipt_at.desc())).all())
+    if receipt_from: query = query.where(Case.receipt_date >= receipt_from)
+    if receipt_to: query = query.where(Case.receipt_date <= receipt_to)
+    candidates = list(db.scalars(query.order_by(Case.receipt_date.desc(), Case.id.desc())).all())
     visible = [case for case in candidates if can_view_case(user, case)]
     start = (page - 1) * page_size
     return PaginatedCases(items=visible[start:start + page_size], total=len(visible), page=page, page_size=page_size)
@@ -65,6 +66,26 @@ def list_cases(institution_id: int | None = None, permanent_id: str | None = Non
 
 @router.post("", response_model=CasePublic, status_code=status.HTTP_201_CREATED)
 def new_case(payload: CaseCreate, db: Session = Depends(get_db), user: User = Depends(get_current_user)) -> Case:
+    if user.role == Role.INSTITUTION_REPRESENTATIVE:
+        if user.institution_id is None:
+            raise HTTPException(status_code=403, detail="Institution account is not linked to an authorized institution")
+        # Resolve originating bureau from the user assignment or configured intake bureau
+        bureau_id = user.bureau_id
+        if not bureau_id:
+            bureau = db.scalar(select(Bureau).where(Bureau.code == "RB")) or db.scalar(select(Bureau).order_by(Bureau.id))
+            if not bureau:
+                raise HTTPException(status_code=422, detail="No originating bureau configured for application intake")
+            bureau_id = bureau.id
+        payload = payload.model_copy(update={
+            "institution_id": user.institution_id,
+            "originating_bureau_id": bureau_id,
+            "current_bureau_id": bureau_id,
+        })
+    else:
+        if payload.institution_id is None:
+            raise HTTPException(status_code=422, detail="Institution ID is required")
+        if payload.originating_bureau_id is None:
+            raise HTTPException(status_code=422, detail="Originating bureau is required")
     institution = db.get(Institution, payload.institution_id)
     if not institution:
         raise HTTPException(status_code=404, detail="Institution not found")

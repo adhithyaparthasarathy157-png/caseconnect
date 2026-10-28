@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic_core import PydanticCustomError
 
 from app.enums import (
     ActionType,
@@ -34,6 +35,7 @@ class UserPublic(ORMModel):
     role: Role
     is_active: bool
     bureau_id: int | None
+    institution_id: int | None
     region_scope: str | None
 
 
@@ -135,36 +137,55 @@ class InstitutionProfile(InstitutionPublic):
     cases: list["CasePublic"]
     related_overlaps: list[InstitutionRelatedOverlap]
     related_coordination: list[InstitutionRelatedCoordination]
+    accounts: list[UserPublic] = []
 
 
 class CaseCreate(BaseModel):
     external_reference: str | None = Field(default=None, max_length=120)
-    institution_id: int
-    receipt_at: datetime
+    institution_id: int | None = None
+    receipt_date: date
     source_channel: str = Field(min_length=2, max_length=100)
     category: str = Field(min_length=2, max_length=100)
     subcategory: str | None = Field(default=None, max_length=100)
     subject: str = Field(min_length=4, max_length=300)
-    description: str = Field(min_length=10)
+    description: str
     priority: Priority = Priority.MEDIUM
-    originating_bureau_id: int
+    originating_bureau_id: int | None = None
     current_bureau_id: int | None = None
     assigned_officer_id: int | None = None
     next_action: str | None = Field(default=None, max_length=300)
     expected_disposal_date: datetime | None = None
+
+    @field_validator("description")
+    @classmethod
+    def description_must_not_be_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise PydanticCustomError("description_blank", "Description is required")
+        return value
 
 
 class CaseUpdate(BaseModel):
     category: str | None = Field(default=None, min_length=2, max_length=100)
     subcategory: str | None = Field(default=None, max_length=100)
     subject: str | None = Field(default=None, min_length=4, max_length=300)
-    description: str | None = Field(default=None, min_length=10)
+    description: str | None = None
     priority: Priority | None = None
     status: CaseStatus | None = None
     assigned_officer_id: int | None = None
     next_action: str | None = Field(default=None, max_length=300)
     expected_disposal_date: datetime | None = None
     remarks: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("description")
+    @classmethod
+    def description_must_not_be_blank(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise PydanticCustomError("description_blank", "Description is required")
+        return value
 
 
 class CaseActionCreate(BaseModel):
@@ -180,7 +201,7 @@ class CasePublic(ORMModel):
     case_id: str
     external_reference: str | None
     institution_id: int
-    receipt_at: datetime
+    receipt_date: date
     source_channel: str
     category: str
     subcategory: str | None
@@ -228,6 +249,9 @@ class OverlapPublic(ORMModel):
     case_high_id: int
     case_low_reference: str | None
     case_high_reference: str | None
+    case_low_bureau_id: int | None = None
+    case_high_bureau_id: int | None = None
+    is_cross_bureau: bool = False
     institution_name: str | None
     similarity_score: int
     identity_match: bool
@@ -279,6 +303,7 @@ class AlertPublic(ORMModel):
     title: str
     message: str
     case_id: int | None
+    case_reference: str | None = None
     overlap_id: int | None
     bureau_id: int | None
     region: str | None

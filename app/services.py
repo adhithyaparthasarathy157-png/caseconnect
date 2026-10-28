@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -62,8 +62,12 @@ def create_case(db: Session, payload: CaseCreate, actor: User) -> Case:
     current_bureau_id = payload.current_bureau_id or payload.originating_bureau_id
     validate_case_references(db, payload.institution_id, payload.originating_bureau_id, current_bureau_id, payload.assigned_officer_id)
     created = now()
+    # The database still retains `receipt_at` for historical reporting.  Its
+    # midnight value is an internal date compatibility marker, not a received
+    # time or timezone supplied by the user.
+    receipt_at = datetime.combine(payload.receipt_date, time.min)
     case = Case(case_id=unique_case_id(db), external_reference=payload.external_reference,
-                institution_id=payload.institution_id, receipt_at=payload.receipt_at, source_channel=payload.source_channel,
+                institution_id=payload.institution_id, receipt_at=receipt_at, receipt_date=payload.receipt_date, source_channel=payload.source_channel,
                 category=payload.category, subcategory=payload.subcategory, subject=payload.subject,
                 description=payload.description, priority=payload.priority, originating_bureau_id=payload.originating_bureau_id,
                 current_bureau_id=current_bureau_id, assigned_officer_id=payload.assigned_officer_id,
@@ -165,6 +169,12 @@ def apply_action(db: Session, case: Case, payload: CaseActionCreate, actor: User
 def can_create_for_bureaus(actor: User, originating_bureau_id: int, current_bureau_id: int, institution: Institution) -> bool:
     if actor.role in {Role.ADMIN, Role.COMPETENT_AUTHORITY}:
         return True
+    if actor.role == Role.INSTITUTION_REPRESENTATIVE:
+        return (
+            actor.institution_id == institution.id
+            and (actor.bureau_id is None or actor.bureau_id == originating_bureau_id)
+            and originating_bureau_id == current_bureau_id
+        )
     if actor.role == Role.SENIOR_MANAGEMENT:
         return False
     if actor.bureau_id != originating_bureau_id or actor.bureau_id != current_bureau_id:

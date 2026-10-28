@@ -20,6 +20,7 @@ from app.routers import (
     institutions,
     monitoring,
     overlaps,
+    portal,
     reference,
 )
 
@@ -35,7 +36,14 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="AICTE CaseConnect API", version="0.1.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:[0-9]+)?$",
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(auth.router)
 app.include_router(institutions.router)
 app.include_router(cases.router)
@@ -46,6 +54,7 @@ app.include_router(alerts.router)
 app.include_router(analytics.router)
 app.include_router(monitoring.router)
 app.include_router(audit.router)
+app.include_router(portal.router)
 
 
 @app.get("/", tags=["system"])
@@ -60,7 +69,9 @@ def root() -> dict[str, str]:
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
-    return JSONResponse(status_code=422, content={"error": {"code": "validation_error", "details": exc.errors()}})
+    details = exc.errors()
+    message = details[0]["msg"] if details else "Validation failed"
+    return JSONResponse(status_code=422, content={"error": {"code": "validation_error", "message": message, "details": details}})
 
 
 @app.exception_handler(HTTPException)

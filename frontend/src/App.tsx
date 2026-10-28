@@ -1,22 +1,169 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
+
 import { api, download } from "./api";
+import { dateOnlyForApi, formatDateOnly, formatDateTime } from "./dateTime";
+import { InstitutionPortal } from "./InstitutionPortal";
 
 type Tab = "Overview" | "Cases" | "Institutions" | "Overlaps" | "Alerts" | "Reports" | "Audit";
 type Row = Record<string, unknown>;
 type Bureau = { id: number; code: string; name: string };
-type User = { id: number; full_name: string; role: string; bureau_id: number | null };
-type Case = Row & { id: number; case_id: string; institution_id: number; current_bureau_id: number; assigned_officer_id?: number | null; status: string; subject: string; description: string };
+type User = { id: number; full_name: string; email?: string; role: string; is_active?: boolean; bureau_id: number | null; institution_id: number | null };
+type Case = Row & { id: number; case_id: string; institution_id: number; current_bureau_id: number; assigned_officer_id?: number | null; status: string; subject: string; description: string; receipt_date: string; category: string; priority: string };
 type CaseContext = { case: Case; history: Row[]; overlaps: Row[]; alerts: Row[]; coordination: Row[] };
-type Profile = Row & { id: number; name: string; permanent_id?: string | null; permanent_id_verified: boolean; total_cases: number; cases_by_status: Record<string, number>; cases: Case[]; related_overlaps: Row[]; related_coordination: Row[] };
-const tabs: Tab[] = ["Overview", "Cases", "Institutions", "Overlaps", "Alerts", "Reports", "Audit"];
-const paths: Partial<Record<Tab, string>> = { Cases: "/api/cases", Institutions: "/api/institutions", Overlaps: "/api/overlaps", Alerts: "/api/alerts", Audit: "/api/audit-events" };
-const statuses = ["Received", "Under Review", "Under Process", "Pending Institution Response", "Transferred", "Escalated", "Disposed", "Closed"];
-const coordinationStatuses = ["Responded", "More Information Requested", "Resolved"];
+type Profile = Row & { id: number; name: string; permanent_id?: string | null; permanent_id_verified: boolean; total_cases: number; cases_by_status: Record<string, number>; cases: Case[]; related_overlaps: Row[]; related_coordination: Row[]; accounts?: User[] };
 
-function Rows({ rows, select }: { rows: Row[]; select?: (item: Row) => void }) {
-  if (!rows.length) return <p className="empty">No accessible records match this view.</p>;
-  const keys = Object.keys(rows[0]).filter(key => !["description", "reasons", "details"].includes(key)).slice(0, 7);
-  return <div className="table"><table><thead><tr>{keys.map(key => <th key={key}>{key.replaceAll("_", " ")}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={String(row.id || row.case_id || index)} onClick={() => select?.(row)}>{keys.map(key => <td key={key}>{Array.isArray(row[key]) ? (row[key] as string[]).join("; ") : String(row[key] ?? "-")}</td>)}</tr>)}</tbody></table></div>;
+const tabs: Tab[] = ["Overview", "Cases", "Institutions", "Overlaps", "Alerts", "Reports", "Audit"];
+const paths: Partial<Record<Tab, string>> = { Institutions: "/api/institutions", Overlaps: "/api/overlaps", Alerts: "/api/alerts", Audit: "/api/audit-events" };
+const statuses = ["Received", "Under Review", "Under Process", "Pending Institution Response", "Transferred", "Escalated", "Disposed", "Closed"];
+const today = () => {
+  const value = new Date();
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+};
+
+const SENSITIVE_KEYS = new Set(["password", "token", "secret", "access_token", "hashed_password", "jwt"]);
+const FIELD_LABELS: Record<string, string> = {
+  status: "Status",
+  current_bureau_id: "Current Bureau",
+  originating_bureau_id: "Originating Bureau",
+  assigned_officer_id: "Assigned Officer",
+  institution_id: "Institution",
+  priority: "Priority",
+  subject: "Subject",
+  category: "Category",
+  subcategory: "Subcategory",
+  receipt_date: "Receipt Date",
+  source_channel: "Source Channel",
+  expected_disposal_date: "Expected Disposal",
+  next_action: "Next Action",
+  remarks: "Remarks",
+};
+
+function formatKey(key: string): string {
+  if (FIELD_LABELS[key]) return FIELD_LABELS[key];
+  return key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function formatValue(value: unknown): React.ReactNode {
+  if (value === null || value === undefined || value === "") return "-";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (typeof value === "number") return String(value);
+  if (typeof value === "string") {
+    if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(value)) {
+      return formatDateTime(value);
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "-";
+    return value.map(item => typeof item === "object" && item !== null ? JSON.stringify(item) : String(item)).join(", ");
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).filter(
+      ([k]) => !SENSITIVE_KEYS.has(k.toLowerCase())
+    );
+    if (entries.length === 0) return "-";
+    return (
+      <div className="kv-list">
+        {entries.map(([k, v]) => (
+          <span className="kv-item" key={k}>
+            <strong className="kv-key">{formatKey(k)}:</strong>{" "}
+            <span className="kv-val">
+              {v === null || v === undefined ? "-" : typeof v === "object" ? JSON.stringify(v) : String(v)}
+            </span>
+          </span>
+        ))}
+      </div>
+    );
+  }
+  return String(value);
+}
+
+function Rows({ rows, select, emptyMessage }: { rows: Row[]; select?: (row: Row) => void; emptyMessage?: string }) {
+  if (!rows.length) return <p className="empty-neutral">{emptyMessage || "No accessible records match this view."}</p>;
+  const keys = Object.keys(rows[0]).filter(key => !["description", "details", "reasons"].includes(key)).slice(0, 7);
+  return (
+    <div className="table">
+      <table>
+        <thead>
+          <tr>{keys.map(key => <th key={key}>{key.replaceAll("_", " ")}</th>)}</tr>
+        </thead>
+        <tbody>
+          {rows.map((row, index) => (
+            <tr key={String(row.id || row.case_id || index)} onClick={() => select?.(row)}>
+              {keys.map(key => (
+                <td key={key}>{formatValue(row[key])}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+type CaseEvent = {
+  id: string;
+  case_id: number;
+  action_type: string;
+  actor_id?: number | null;
+  bureau_id?: number | null;
+  previous_values?: Record<string, unknown> | null;
+  new_values?: Record<string, unknown> | null;
+  remarks?: string | null;
+  created_at: string;
+};
+
+function TimelineTable({ events }: { events: Row[] }) {
+  if (!events || events.length === 0) {
+    return <p className="empty-neutral">No workflow history recorded for this case.</p>;
+  }
+  return (
+    <div className="table">
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Action</th>
+            <th>Remarks / Reason</th>
+            <th>Previous Values</th>
+            <th>New Values</th>
+            <th>Bureau / Actor</th>
+            <th>Event ID</th>
+          </tr>
+        </thead>
+        <tbody>
+          {events.map((ev, index) => {
+            const event = ev as unknown as CaseEvent;
+            return (
+              <tr key={event.id || index}>
+                <td>{formatDateTime(event.created_at)}</td>
+                <td><span className="badge">{event.action_type || "-"}</span></td>
+                <td style={{ maxWidth: 260, whiteSpace: "normal" }}>{event.remarks || "-"}</td>
+                <td>{formatValue(event.previous_values)}</td>
+                <td>{formatValue(event.new_values)}</td>
+                <td>
+                  <small>
+                    {event.bureau_id ? `Bureau #${event.bureau_id}` : "-"}
+                    {event.actor_id ? ` · User #${event.actor_id}` : ""}
+                  </small>
+                </td>
+                <td>
+                  <small title={event.id} style={{ fontFamily: "monospace", color: "#64748b" }}>
+                    {event.id ? `${event.id.slice(0, 8)}…` : "-"}
+                  </small>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CasesTable({ rows, open }: { rows: Case[]; open: (caseId: string) => void }) {
+  if (!rows.length) return <p className="empty">No accessible cases match this search.</p>;
+  return <div className="table"><table><thead><tr><th>Case ID</th><th>Institution ID</th><th>Receipt Date</th><th>Subject</th><th>Category</th><th>Stage / status</th><th>Priority</th><th /></tr></thead><tbody>{rows.map(item => <tr key={item.id}><td><button className="linkbutton" onClick={() => open(item.case_id)}>{item.case_id}</button></td><td>{item.institution_id}</td><td>{formatDateOnly(item.receipt_date)}</td><td className="subject">{item.subject}</td><td>{item.category}</td><td><span className="badge">{item.status}</span></td><td>{item.priority}</td><td><button onClick={() => open(item.case_id)}>Open</button></td></tr>)}</tbody></table></div>;
 }
 
 function Chart({ title, data }: { title: string; data: Record<string, number> }) {
@@ -24,48 +171,937 @@ function Chart({ title, data }: { title: string; data: Record<string, number> })
   return <section className="panel chart"><h2>{title}</h2>{Object.entries(data).map(([label, value]) => <div className="bar" key={label}><span>{label}</span><i><b style={{ width: `${value / max * 100}%` }} /></i><strong>{value}</strong></div>)}</section>;
 }
 
-function Login({ login }: { login: (value: string) => void }) {
-  const [email, setEmail] = useState("admin@demo.example.com"), [password, setPassword] = useState("DemoPass!2026"), [error, setError] = useState("");
-  const submit = async (event: FormEvent) => { event.preventDefault(); try { setError(""); login((await api<{ access_token: string }>("/api/auth/token", { method: "POST", body: JSON.stringify({ email, password }) })).access_token); } catch (x) { setError((x as Error).message); } };
-  return <main className="login"><section><p className="eyebrow">AICTE CASECONNECT</p><h1>Case coordination workspace</h1><p>Synthetic Demonstration Data — Not Official AICTE Records.</p><form onSubmit={submit}><label>Email<input value={email} onChange={e => setEmail(e.target.value)} /></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} /></label>{error && <p className="error">{error}</p>}<button>Sign in</button></form></section></main>;
+function Landing() {
+  return (
+    <div className="landing-shell">
+      <header className="landing-header">
+        <div className="emblem-group">
+          <span className="emblem-tag">AICTE</span>
+          <div>
+            <div className="brand-title">CaseConnect</div>
+            <div className="brand-sub">All India Council for Technical Education</div>
+          </div>
+        </div>
+        <span className="badge">National Prototype</span>
+      </header>
+
+      <main className="landing-main">
+        <div className="landing-hero">
+          <span className="eyebrow-pill">Case Management &amp; Scrutiny Portal</span>
+          <h1>Application Tracking and Case Coordination Workspace</h1>
+          <p className="subtitle">
+            A unified administrative platform connecting AICTE scrutiny bureaus with approved technical institutions for end-to-end case tracking, grievance resolution, and inter-bureau coordination.
+          </p>
+          <div className="disclaimer-pill">
+            Synthetic Demonstration Data • Not Official AICTE Records
+          </div>
+        </div>
+
+        <div className="landing-grid">
+          <article className="portal-card">
+            <span className="portal-card-badge badge-admin">AICTE Officers &amp; Scrutiny</span>
+            <h2>Admin Portal</h2>
+            <p className="card-desc">
+              Dedicated operational workspace for AICTE administrators, scrutiny officers, and regional bureau coordinators to manage cases, process transfers, detect institutional overlaps, and audit resolution workflows.
+            </p>
+            <ul className="portal-features">
+              <li>Comprehensive Cases Dashboard &amp; Tracking</li>
+              <li>Consolidated Institution Registry &amp; Profiles</li>
+              <li>Explainable Overlap Detection &amp; Review</li>
+              <li>Bilateral Bureau Coordination Requests</li>
+              <li>Custom Analytics, Metrics, and Safe CSV Exports</li>
+            </ul>
+            <button
+              className="portal-btn portal-btn-admin"
+              onClick={() => { window.location.href = "/admin/login"; }}
+            >
+              Sign In to Admin Portal →
+            </button>
+            <p className="portal-subtext">Authorized administrators and bureau officers only</p>
+          </article>
+
+          <article className="portal-card">
+            <span className="portal-card-badge badge-institution">Approved Institutions</span>
+            <h2>Institution User Portal</h2>
+            <p className="card-desc">
+              Self-service portal for authorized representatives of AICTE-approved institutions to submit applications, review real-time processing stages, track official alerts, and view institutional records.
+            </p>
+            <ul className="portal-features">
+              <li>Institution Application Docket &amp; History</li>
+              <li>Direct Application Intake without ID Entry</li>
+              <li>Stage Timeline, Deficiencies &amp; Action Notices</li>
+              <li>Targeted Clarification &amp; Response Submissions</li>
+              <li>Institution Profile &amp; Permanent ID Status</li>
+            </ul>
+            <button
+              className="portal-btn portal-btn-inst"
+              onClick={() => { window.location.href = "/institution/login"; }}
+            >
+              Sign In to Institution Portal →
+            </button>
+            <p className="portal-subtext">Registered institution representatives and grievance coordinators</p>
+          </article>
+        </div>
+      </main>
+
+      <footer className="landing-footer">
+        <div>All India Council for Technical Education (AICTE) — CaseConnect Prototype</div>
+        <small>Developed for SIH 2026. Demonstration environment utilizing synthetic records only.</small>
+      </footer>
+    </div>
+  );
 }
 
-function CaseForm({ bureaus, token, done, fail }: { bureaus: Bureau[]; token: string; done: (message: string) => void; fail: (message: string) => void }) {
+function Login({ login }: { login: (token: string) => void }) {
+  const institutionPortal = window.location.pathname.startsWith("/institution");
+  // Vite loads these values only in local development mode. Production builds
+  // receive empty initial values and do not embed the local demo credentials.
+  const demoAutofill = import.meta.env.DEV && import.meta.env.VITE_DEMO_AUTOFILL === "true";
+  const [email, setEmail] = useState(demoAutofill ? institutionPortal ? import.meta.env.VITE_INSTITUTION_DEMO_EMAIL || "" : import.meta.env.VITE_DEMO_EMAIL || "" : ""), [password, setPassword] = useState(demoAutofill ? institutionPortal ? import.meta.env.VITE_INSTITUTION_DEMO_PASSWORD || "" : import.meta.env.VITE_DEMO_PASSWORD || "" : ""), [error, setError] = useState(""), [loading, setLoading] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!email.trim() || !password) return setError("Enter your email address and password.");
+    try {
+      setLoading(true);
+      setError("");
+      const res = await api<{ access_token: string }>("/api/auth/token", {
+        method: "POST",
+        body: JSON.stringify({ email: email.trim(), password }),
+      });
+      login(res.access_token);
+    } catch (x) {
+      setError((x as Error).message || "Unable to sign in.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  return (
+    <main className="login">
+      <section>
+        <button
+          type="button"
+          className="linkbutton"
+          onClick={() => { window.location.href = "/"; }}
+          style={{ marginBottom: 16, fontSize: 13, textDecoration: "none", display: "inline-block" }}
+        >
+          ← Back to Portal Selection
+        </button>
+        <p className="eyebrow">AICTE CASECONNECT</p>
+        <h1>{institutionPortal ? "Institution User Portal" : "Admin Portal"}</h1>
+        <p>Synthetic demonstration data only — not official AICTE records.</p>
+        <form onSubmit={submit} noValidate>
+          <label>Email
+            <input type="email" value={email} autoComplete="username" onChange={event => setEmail(event.target.value)} />
+          </label>
+          <label>Password
+            <input type="password" value={password} autoComplete="current-password" onChange={event => setPassword(event.target.value)} />
+          </label>
+          {error && <p className="error">{error}</p>}
+          <button disabled={loading}>{loading ? "Signing in…" : "Sign in"}</button>
+        </form>
+      </section>
+    </main>
+  );
+}
+
+function CaseForm({ bureaus, token, created, fail }: { bureaus: Bureau[]; token: string; created: (item: Case) => void; fail: (message: string) => void }) {
   const [saving, setSaving] = useState(false), [error, setError] = useState("");
-  const submit = async (event: FormEvent<HTMLFormElement>) => { event.preventDefault(); const data = new FormData(event.currentTarget), get = (key: string) => String(data.get(key) || "").trim(), receipt = get("receipt_at"), deadline = get("expected_disposal_date"); if (!Number(get("institution_id")) || !Number(get("originating_bureau_id"))) return setError("Institution and originating bureau are required."); if (!receipt || get("description").length < 10) return setError("Receipt date and a 10-character description are required."); if (deadline && new Date(deadline) < new Date(receipt)) return setError("Expected disposal cannot be earlier than receipt."); try { setSaving(true); setError(""); const created = await api<Case>("/api/cases", { token, method: "POST", body: JSON.stringify({ institution_id: Number(get("institution_id")), originating_bureau_id: Number(get("originating_bureau_id")), receipt_at: new Date(receipt).toISOString(), expected_disposal_date: deadline ? new Date(deadline).toISOString() : undefined, source_channel: get("source_channel"), category: get("category"), priority: get("priority"), subject: get("subject"), description: get("description"), external_reference: get("external_reference") || undefined, next_action: get("next_action") || undefined }) }); event.currentTarget.reset(); done(`Case ${created.case_id} was created.`); } catch (x) { setError((x as Error).message); fail((x as Error).message); } finally { setSaving(false); } };
-  return <form className="panel formgrid" onSubmit={submit} noValidate><div className="formtitle"><h2>Create synthetic case</h2><p>Saved only after API confirmation.</p></div><label>Institution ID *<input name="institution_id" required inputMode="numeric" /></label><label>Originating bureau *<select name="originating_bureau_id" required><option value="">Select bureau</option>{bureaus.map(item => <option key={item.id} value={item.id}>{item.code} — {item.name}</option>)}</select></label><label>Receipt date and time *<input name="receipt_at" type="datetime-local" required /></label><label>Expected disposal <em>optional</em><input name="expected_disposal_date" type="datetime-local" /></label><label>Source channel *<input name="source_channel" defaultValue="Portal" required /></label><label>Category *<input name="category" defaultValue="Grievance" required /></label><label>Priority *<select name="priority" defaultValue="Medium">{["Low", "Medium", "High", "Critical"].map(item => <option key={item}>{item}</option>)}</select></label><label>External reference <em>optional</em><input name="external_reference" /></label><label className="wide">Subject *<input name="subject" minLength={4} required /></label><label className="wide">Complaint description *<textarea name="description" minLength={10} required /></label><label className="wide">Next action <em>optional</em><input name="next_action" /></label>{error && <p className="error wide">{error}</p>}<button disabled={saving}>{saving ? "Creating…" : "Create synthetic case"}</button></form>;
+  const clear = () => { setError(""); fail(""); };
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = event.currentTarget, data = new FormData(form), get = (key: string) => String(data.get(key) || "").trim();
+    if (!Number(get("institution_id")) || !Number(get("originating_bureau_id"))) return setError("Institution ID and originating bureau are required.");
+    if (get("subject").length < 4) return setError("Subject must contain at least 4 characters.");
+    if (!get("description")) return setError("Complaint description is required.");
+    let receiptDate: string;
+    try { receiptDate = dateOnlyForApi(get("receipt_date"), "Receipt Date"); } catch (x) { return setError((x as Error).message); }
+    try {
+      setSaving(true); clear();
+      const item = await api<Case>("/api/cases", { token, method: "POST", body: JSON.stringify({ institution_id: Number(get("institution_id")), originating_bureau_id: Number(get("originating_bureau_id")), receipt_date: receiptDate, source_channel: get("source_channel"), category: get("category"), priority: get("priority"), subject: get("subject"), description: get("description"), expected_disposal_date: get("expected_disposal_date") || undefined, external_reference: get("external_reference") || undefined, next_action: get("next_action") || undefined }) });
+      created(item);
+    } catch (x) { const message = (x as Error).message; setError(message); fail(message); }
+    finally { setSaving(false); }
+  };
+  return <form className="panel formgrid" onSubmit={submit} onChange={clear} noValidate><div className="formtitle"><h2>Create synthetic case</h2><p>Required fields are shown first. The case is saved only after server confirmation.</p></div><label>Institution ID *<input name="institution_id" type="number" min="1" required inputMode="numeric" /><small>Use an accessible institution ID from the Institutions directory.</small></label><label>Receipt Date *<input name="receipt_date" type="date" defaultValue={today()} required /><small>Choose a date only. It is stored and displayed as DD-MM-YYYY.</small></label><label>Subject *<input name="subject" minLength={4} required /></label><label>Complaint Description *<textarea name="description" required /></label><label>Originating Bureau *<select name="originating_bureau_id" required><option value="">Select bureau</option>{bureaus.map(item => <option key={item.id} value={item.id}>{item.code} — {item.name}</option>)}</select></label><label>Category *<input name="category" defaultValue="Grievance" required /></label><label>Source Channel *<input name="source_channel" defaultValue="Portal" required /></label><label>Priority *<select name="priority" defaultValue="Medium">{["Low", "Medium", "High", "Critical"].map(item => <option key={item}>{item}</option>)}</select></label><details className="wide"><summary>Additional details (optional)</summary><div className="formgrid details"><label>Expected Disposal Date<input name="expected_disposal_date" type="date" /><small>An optional planning date; it is separate from Receipt Date.</small></label><label>External Reference<input name="external_reference" /></label><label className="wide">Next Action<input name="next_action" /></label></div></details>{error && <p className="error wide">{error}</p>}<button disabled={saving}>{saving ? "Creating…" : "Create synthetic case"}</button></form>;
 }
 
-function CoordinationPanel({ rows, token, refreshed, fail, done }: { rows: Row[]; token: string; refreshed: () => Promise<void>; fail: (message: string) => void; done: (message: string) => void }) {
-  const [selected, setSelected] = useState<Row | null>(null), [response, setResponse] = useState(""), [status, setStatus] = useState(coordinationStatuses[0]), [saving, setSaving] = useState(false), [error, setError] = useState("");
-  const submit = async (event: FormEvent) => { event.preventDefault(); if (!selected) return; if (response.trim().length < 2) return setError("Enter a response of at least 2 characters."); try { setSaving(true); setError(""); const updated = await api<Row>(`/api/coordination/${selected.id}/respond`, { token, method: "POST", body: JSON.stringify({ status, response: response.trim() }) }); setSelected(updated); setResponse(""); await refreshed(); done("Coordination response saved by the server."); } catch (x) { setError((x as Error).message); fail((x as Error).message); } finally { setSaving(false); } };
-  return <><Rows rows={rows} select={item => { setSelected(item); setError(""); }} />{selected && <section className="panel"><h4>Coordination request {String(selected.id)}</h4><p>Requesting case #{String(selected.requesting_case_id)} → receiving case #{String(selected.receiving_case_id)}</p><p><strong>Reason:</strong> {String(selected.reason || "-")}</p><p><strong>Current status:</strong> {String(selected.status)} {selected.response ? `— ${String(selected.response)}` : ""}</p>{String(selected.status) === "Resolved" ? <p className="empty">This request is resolved and cannot receive another response.</p> : <form className="formgrid" onSubmit={submit}><label>Response status<select value={status} onChange={e => setStatus(e.target.value)}>{coordinationStatuses.map(item => <option key={item}>{item}</option>)}</select></label><label>Response / remarks<textarea value={response} onChange={e => setResponse(e.target.value)} required minLength={2} /></label>{error && <p className="error wide">{error}</p>}<button disabled={saving}>{saving ? "Submitting…" : "Submit coordination response"}</button></form>}</section>}</>;
+type CoordinationItem = Row & {
+  id: string;
+  overlap_id: number;
+  requesting_case_id: number;
+  receiving_case_id: number;
+  requesting_bureau_id: number;
+  receiving_bureau_id: number;
+  requester_id: number;
+  status: string;
+  reason: string;
+  response?: string | null;
+  responded_by_id?: number | null;
+  responded_at?: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+function CoordinationPanel({
+  rows,
+  overlaps,
+  currentCase,
+  token,
+  refresh,
+  notice,
+  fail,
+}: {
+  rows: Row[];
+  overlaps?: Row[];
+  currentCase?: Case;
+  token: string;
+  refresh: () => Promise<void>;
+  notice: (message: string) => void;
+  fail: (message: string) => void;
+}) {
+  const [selected, setSelected] = useState<Row | null>(null);
+  const [response, setResponse] = useState("");
+  const [status, setStatus] = useState("Responded");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const [showInitiate, setShowInitiate] = useState(false);
+  const [initiateOverlapId, setInitiateOverlapId] = useState<number | "">("");
+  const [initiateReason, setInitiateReason] = useState("");
+  const [initiating, setInitiating] = useState(false);
+
+  const submitResponse = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!selected || response.trim().length < 2) return setError("Enter a response of at least 2 characters.");
+    try {
+      setSaving(true);
+      setError("");
+      const updated = await api<Row>(`/api/coordination/${selected.id}/respond`, {
+        token,
+        method: "POST",
+        body: JSON.stringify({ status, response: response.trim() }),
+      });
+      setSelected(updated);
+      setResponse("");
+      await refresh();
+      notice("Coordination response saved.");
+    } catch (x) {
+      const message = (x as Error).message;
+      setError(message);
+      fail(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const submitInitiate = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!initiateOverlapId || !currentCase) return setError("Select an overlap to coordinate.");
+    if (initiateReason.trim().length < 2) return setError("Enter a reason of at least 2 characters.");
+    try {
+      setInitiating(true);
+      setError("");
+      await api<Row>(`/api/coordination/from-overlap/${initiateOverlapId}`, {
+        token,
+        method: "POST",
+        body: JSON.stringify({ requesting_case_id: currentCase.id, reason: initiateReason.trim() }),
+      });
+      setShowInitiate(false);
+      setInitiateReason("");
+      setInitiateOverlapId("");
+      await refresh();
+      notice("Coordination request submitted successfully.");
+    } catch (x) {
+      const message = (x as Error).message;
+      setError(message);
+      fail(message);
+    } finally {
+      setInitiating(false);
+    }
+  };
+
+  return (
+    <>
+      {rows.length === 0 ? (
+        <p className="empty-neutral">No coordination activity recorded yet for this case.</p>
+      ) : (
+        <div className="table">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Reason</th>
+                <th>Requesting Bureau</th>
+                <th>Receiving Bureau</th>
+                <th>Response</th>
+                <th>Updated</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, index) => {
+                const item = r as unknown as CoordinationItem;
+                const isSelected = selected?.id === item.id;
+                return (
+                  <tr key={item.id || index} style={isSelected ? { background: "#edf4fe" } : undefined}>
+                    <td><span className="badge">{item.status || "Pending"}</span></td>
+                    <td style={{ maxWidth: 260, whiteSpace: "normal" }}>{item.reason}</td>
+                    <td>Bureau #{item.requesting_bureau_id}</td>
+                    <td>Bureau #{item.receiving_bureau_id}</td>
+                    <td style={{ maxWidth: 240, whiteSpace: "normal" }}>{item.response || <em style={{ color: "#718096" }}>Awaiting response</em>}</td>
+                    <td>{formatDateTime(item.updated_at || item.created_at)}</td>
+                    <td>
+                      <button
+                        className="btn-sm"
+                        onClick={() => { setSelected(isSelected ? null : item); setError(""); }}
+                      >
+                        {isSelected ? "Close" : item.status === "Resolved" ? "View" : "Respond"}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {currentCase && (() => {
+        const eligibleOverlaps = (overlaps || []).filter((ov: Row) => {
+          const isCross = Boolean(ov.is_cross_bureau);
+          const isAlreadyRequested = ov.status === "Coordination Requested";
+          return isCross && !isAlreadyRequested;
+        });
+
+        if (!showInitiate) {
+          if (eligibleOverlaps.length > 0) {
+            return (
+              <div style={{ marginTop: 10 }}>
+                <button
+                  type="button"
+                  className="btn-sm btn-outline"
+                  onClick={() => { setShowInitiate(true); setError(""); }}
+                >
+                  + Request Inter-Bureau Coordination ({eligibleOverlaps.length} eligible overlap{eligibleOverlaps.length > 1 ? "s" : ""})
+                </button>
+              </div>
+            );
+          }
+          if (overlaps && overlaps.length > 0) {
+            return (
+              <div style={{ marginTop: 10 }}>
+                <p className="empty-neutral" style={{ textAlign: "left", fontSize: 12 }}>
+                  ℹ️ <strong>No overlaps eligible for inter-bureau coordination.</strong> The {overlaps.length} detected overlap{overlaps.length > 1 ? "s" : ""} for this case {overlaps.length > 1 ? "are" : "is"} currently assigned to the same bureau (Bureau #{currentCase.current_bureau_id}). Under AICTE rules, inter-bureau coordination is only applicable between cases currently assigned to different bureaus.
+                </p>
+              </div>
+            );
+          }
+          return null;
+        }
+
+        return (
+          <div style={{ marginTop: 10 }}>
+            <section className="coordination-subpanel">
+              <h4>Initiate Inter-Bureau Coordination Request</h4>
+              <form className="formgrid" onSubmit={submitInitiate}>
+                <label className="wide">
+                  Related Overlap Candidate (Cross-Bureau Only) *
+                  <select
+                    value={initiateOverlapId}
+                    onChange={e => setInitiateOverlapId(Number(e.target.value) || "")}
+                    required
+                  >
+                    <option value="">Select candidate overlap</option>
+                    {eligibleOverlaps.map((ov: Row) => {
+                      const isLow = Number(ov.case_low_id) === currentCase.id;
+                      const otherRef = isLow ? String(ov.case_high_reference || "") : String(ov.case_low_reference || "");
+                      const otherBureau = isLow ? ov.case_high_bureau_id : ov.case_low_bureau_id;
+                      const otherId = isLow ? ov.case_high_id : ov.case_low_id;
+                      return (
+                        <option key={String(ov.id)} value={Number(ov.id)}>
+                          Overlap #{String(ov.id)} — Target Case: {otherRef || `Case #${String(otherId)}`} (Bureau #{String(otherBureau ?? "?")}, {String(ov.similarity_score)}% match)
+                        </option>
+                      );
+                    })}
+                  </select>
+                </label>
+                <label className="wide">
+                  Coordination Reason *
+                  <textarea
+                    value={initiateReason}
+                    onChange={e => setInitiateReason(e.target.value)}
+                    placeholder="Describe why cross-bureau coordination is required..."
+                    minLength={2}
+                    required
+                  />
+                </label>
+                {error && <p className="error wide">{error}</p>}
+                <div className="coordination-actions wide">
+                  <button disabled={initiating}>{initiating ? "Submitting…" : "Send Coordination Request"}</button>
+                  <button type="button" className="btn-outline" onClick={() => setShowInitiate(false)}>Cancel</button>
+                </div>
+              </form>
+            </section>
+          </div>
+        );
+      })()}
+
+      {selected && (
+        <section className="panel coordination-subpanel">
+          <h3>Coordination Request #{String(selected.id).slice(0, 8)}…</h3>
+          <p>
+            <strong>Status:</strong> <span className="badge">{String(selected.status)}</span>
+            {selected.response ? ` — Response: ${String(selected.response)}` : ""}
+          </p>
+          <p><strong>Reason:</strong> {String(selected.reason)}</p>
+          {String(selected.status) === "Resolved" ? (
+            <p className="notice">This coordination request is resolved.</p>
+          ) : (
+            <form className="formgrid" onSubmit={submitResponse}>
+              <label>
+                Response status
+                <select value={status} onChange={event => setStatus(event.target.value)}>
+                  {["Responded", "More Information Requested", "Resolved"].map(item => (
+                    <option key={item}>{item}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Response
+                <textarea
+                  value={response}
+                  onChange={event => setResponse(event.target.value)}
+                  minLength={2}
+                  placeholder="Provide resolution details or requested information..."
+                  required
+                />
+              </label>
+              {error && <p className="error wide">{error}</p>}
+              <div className="coordination-actions wide">
+                <button disabled={saving}>{saving ? "Submitting…" : "Submit response"}</button>
+                <button type="button" className="btn-outline" onClick={() => setSelected(null)}>Close</button>
+              </div>
+            </form>
+          )}
+        </section>
+      )}
+    </>
+  );
 }
 
-function AlertPanel({ rows, token, refreshed, fail, done }: { rows: Row[]; token: string; refreshed: () => Promise<void>; fail: (message: string) => void; done: (message: string) => void }) {
-  const [selected, setSelected] = useState<Row | null>(null), [saving, setSaving] = useState(false), [error, setError] = useState("");
-  const mutate = async (operation: "acknowledge" | "resolve") => { if (!selected) return; try { setSaving(true); setError(""); const updated = await api<Row>(`/api/alerts/${selected.id}/${operation}`, { token, method: "POST" }); setSelected(updated); await refreshed(); done(`Alert ${operation}d by the server.`); } catch (x) { setError((x as Error).message); fail((x as Error).message); } finally { setSaving(false); } };
-  const resolved = Boolean(selected?.resolved_at), acknowledged = Boolean(selected?.acknowledged_at);
-  return <><Rows rows={rows} select={item => { setSelected(item); setError(""); }} />{selected && <section className="panel"><h4>Alert {String(selected.id)}</h4><p><strong>{String(selected.title || selected.alert_type)}</strong> — {String(selected.message || "")}</p><p>Read: {String(Boolean(selected.is_read))} · Acknowledged: {acknowledged ? "yes" : "no"} · Resolved: {resolved ? "yes" : "no"}</p>{error && <p className="error">{error}</p>}<div className="actions"><button disabled={saving || acknowledged || resolved} onClick={() => mutate("acknowledge")}>{saving ? "Saving…" : "Acknowledge alert"}</button><button disabled={saving || resolved} onClick={() => mutate("resolve")}>{saving ? "Saving…" : "Resolve alert"}</button></div></section>}</>;
+type AlertItem = Row & {
+  id: string;
+  alert_type: string;
+  severity: string;
+  title: string;
+  message: string;
+  case_id?: number | null;
+  overlap_id?: number | null;
+  bureau_id?: number | null;
+  region?: string | null;
+  is_read: boolean;
+  acknowledged_at?: string | null;
+  resolved_at?: string | null;
+  created_at: string;
+};
+
+function AlertPanel({
+  rows,
+  token,
+  refresh,
+  notice,
+  fail,
+  emptyMessage,
+}: {
+  rows: Row[];
+  token: string;
+  refresh: () => Promise<void>;
+  notice: (message: string) => void;
+  fail: (message: string) => void;
+  emptyMessage?: string;
+}) {
+  const [selected, setSelected] = useState<Row | null>(null);
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  const mutate = async (alertId: string, operation: "acknowledge" | "resolve") => {
+    try {
+      setSavingId(alertId);
+      setError("");
+      const updated = await api<Row>(`/api/alerts/${alertId}/${operation}`, { token, method: "POST" });
+      if (selected?.id === alertId) setSelected(updated);
+      await refresh();
+      notice(`Alert ${operation === "acknowledge" ? "acknowledged" : "resolved"}.`);
+    } catch (x) {
+      const message = (x as Error).message;
+      setError(message);
+      fail(message);
+    } finally {
+      setSavingId(null);
+    }
+  };
+
+  if (!rows || rows.length === 0) {
+    return <p className="empty-neutral">{emptyMessage || "No alerts recorded for this case."}</p>;
+  }
+
+  return (
+    <>
+      <div className="table">
+        <table>
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Title</th>
+              <th>Message</th>
+              <th>Issued</th>
+              <th>State</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, index) => {
+              const alert = r as unknown as AlertItem;
+              const sev = String(alert.severity || "Info").toLowerCase();
+              const isResolved = Boolean(alert.resolved_at);
+              const isAck = Boolean(alert.acknowledged_at);
+              const isBusy = savingId === alert.id;
+              const isSelected = selected?.id === alert.id;
+              return (
+                <tr key={alert.id || index} style={isSelected ? { background: "#edf4fe" } : undefined}>
+                  <td>
+                    <span className={`badge-severity badge-${sev}`}>
+                      {alert.severity || "Info"}
+                    </span>
+                  </td>
+                  <td><strong>{alert.title}</strong></td>
+                  <td style={{ maxWidth: 320, whiteSpace: "normal" }}>{alert.message}</td>
+                  <td>{formatDateTime(alert.created_at)}</td>
+                  <td>
+                    {isResolved ? (
+                      <span className="badge badge-resolved">Resolved</span>
+                    ) : isAck ? (
+                      <span className="badge badge-ack">Acknowledged</span>
+                    ) : (
+                      <span className="badge badge-active">Active</span>
+                    )}
+                  </td>
+                  <td>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        className="btn-sm"
+                        disabled={isBusy || isAck || isResolved}
+                        onClick={() => mutate(alert.id, "acknowledge")}
+                      >
+                        Acknowledge
+                      </button>
+                      <button
+                        className="btn-sm"
+                        disabled={isBusy || isResolved}
+                        onClick={() => mutate(alert.id, "resolve")}
+                      >
+                        Resolve
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {error && <p className="error">{error}</p>}
+    </>
+  );
 }
 
-function CaseDetail({ context, bureaus, token, back, refresh, fail, done, institution }: { context: CaseContext; bureaus: Bureau[]; token: string; back: () => void; refresh: () => Promise<void>; fail: (message: string) => void; done: (message: string) => void; institution: (id: number) => void }) {
-  const [reason, setReason] = useState(""), [actionError, setActionError] = useState(""); const c = context.case;
-  const action = async (path: string, body: unknown, method = "POST") => { try { setActionError(""); await api(path, { token, method, body: JSON.stringify(body) }); await refresh(); done("Server confirmed the workflow change."); } catch (x) { setActionError((x as Error).message); fail((x as Error).message); } };
-  return <section className="panel detail"><div className="detailhead"><div><p className="eyebrow">CASE DETAIL</p><h2>{c.case_id} <span className="badge">{c.status}</span></h2><p>{c.subject}</p></div><button onClick={back}>Back to cases</button></div><p>{c.description}</p><div className="cards"><article><p>Institution</p><button onClick={() => institution(c.institution_id)}>Open institution #{c.institution_id}</button></article><article><p>Current bureau</p><strong>{c.current_bureau_id}</strong></article><article><p>Assigned officer</p><strong>{String(c.assigned_officer_id || "Unassigned")}</strong></article></div>{actionError && <p className="error">{actionError}</p>}<div className="actions"><form onSubmit={e => { e.preventDefault(); const d = new FormData(e.currentTarget); action(`/api/cases/${c.case_id}`, { status: d.get("status"), remarks: d.get("remarks") }, "PATCH"); }}><label>Status<select name="status">{statuses.filter(item => item !== c.status).map(item => <option key={item}>{item}</option>)}</select></label><input name="remarks" required minLength={2} placeholder="Reason / remarks" /><button>Update status</button></form><form onSubmit={e => { e.preventDefault(); const d = new FormData(e.currentTarget); action(`/api/cases/${c.case_id}/actions`, { action_type: "transferred", target_bureau_id: Number(d.get("bureau")), remarks: d.get("remarks") }); }}><label>Transfer to<select name="bureau" required><option value="">Select bureau</option>{bureaus.filter(item => item.id !== c.current_bureau_id).map(item => <option key={item.id} value={item.id}>{item.code}</option>)}</select></label><input name="remarks" required minLength={2} placeholder="Transfer reason" /><button>Transfer</button></form><form onSubmit={e => { e.preventDefault(); action(`/api/cases/${c.case_id}/actions`, { action_type: "note", remarks: new FormData(e.currentTarget).get("remarks") }); }}><label>Internal note<input name="remarks" required minLength={2} placeholder="Note" /></label><button>Add note</button></form><button onClick={() => action(`/api/cases/${c.case_id}/actions`, { action_type: "escalated", remarks: "Escalated from CaseConnect workflow" })}>Escalate</button></div><h3>Workflow history</h3><Rows rows={context.history} /><h3>Potential overlaps</h3>{context.overlaps.length > 0 && <label>Coordination reason<input value={reason} onChange={e => setReason(e.target.value)} placeholder="Reason for coordination" /></label>}<Rows rows={context.overlaps} select={item => action(`/api/coordination/from-overlap/${item.id}`, { requesting_case_id: c.id, reason: reason || "Please review the related synthetic case." })} /><h3>Coordination requests</h3><CoordinationPanel rows={context.coordination} token={token} refreshed={refresh} fail={fail} done={done} /><h3>Case alerts</h3><AlertPanel rows={context.alerts} token={token} refreshed={refresh} fail={fail} done={done} /></section>;
+function CaseDetail({ context, token, bureaus, back, reload, openInstitution, notice, fail }: { context: CaseContext; token: string; bureaus: Bureau[]; back: () => void; reload: () => Promise<void>; openInstitution: (id: number) => void; notice: (message: string) => void; fail: (message: string) => void }) {
+  const c = context.case, [actionError, setActionError] = useState("");
+  const action = async (path: string, body: unknown, method = "POST") => { try { setActionError(""); await api(path, { token, method, body: JSON.stringify(body) }); await reload(); notice("Server confirmed the workflow change."); } catch (x) { const message = (x as Error).message; setActionError(message); fail(message); } };
+  return (
+    <section className="panel detail">
+      <div className="detailhead">
+        <div>
+          <p className="eyebrow">CASE DETAIL</p>
+          <h2>{c.case_id} <span className="badge">{c.status}</span></h2>
+          <p>{c.subject}</p>
+        </div>
+        <button onClick={back}>Back to cases</button>
+      </div>
+      <div className="cards">
+        <article><p>Institution ID</p><button onClick={() => openInstitution(c.institution_id)}>{c.institution_id}</button></article>
+        <article><p>Receipt Date</p><strong>{formatDateOnly(c.receipt_date)}</strong></article>
+        <article><p>Current Stage</p><strong>{c.status}</strong></article>
+        <article><p>Priority</p><strong>{c.priority}</strong></article>
+      </div>
+      <p className="description">{c.description}</p>
+      {actionError && <p className="error">{actionError}</p>}
+      <div className="actions workflows">
+        <form onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); action(`/api/cases/${c.case_id}`, { status: data.get("status"), remarks: data.get("remarks") }, "PATCH"); }}>
+          <label>Status<select name="status">{statuses.filter(item => item !== c.status).map(item => <option key={item}>{item}</option>)}</select></label>
+          <input name="remarks" minLength={2} required placeholder="Reason" />
+          <button>Update status</button>
+        </form>
+        <form onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); action(`/api/cases/${c.case_id}/actions`, { action_type: "note", remarks: data.get("remarks") }); }}>
+          <label>Add note<input name="remarks" minLength={2} required /></label>
+          <button>Add</button>
+        </form>
+        <form onSubmit={event => { event.preventDefault(); const data = new FormData(event.currentTarget); action(`/api/cases/${c.case_id}/actions`, { action_type: "transferred", target_bureau_id: Number(data.get("bureau")), remarks: data.get("remarks") }); }}>
+          <label>Transfer to<select name="bureau" required><option value="">Select bureau</option>{bureaus.filter(item => item.id !== c.current_bureau_id).map(item => <option key={item.id} value={item.id}>{item.code}</option>)}</select></label>
+          <input name="remarks" minLength={2} required placeholder="Reason" />
+          <button>Transfer</button>
+        </form>
+      </div>
+      <h3>Timeline / workflow history</h3>
+      <TimelineTable events={context.history} />
+      <h3>Coordination</h3>
+      <CoordinationPanel rows={context.coordination} overlaps={context.overlaps} currentCase={c} token={token} refresh={reload} notice={notice} fail={fail} />
+      <h3>Alerts</h3>
+      <AlertPanel rows={context.alerts} token={token} refresh={reload} notice={notice} fail={fail} emptyMessage="No alerts recorded for this case." />
+    </section>
+  );
 }
 
 export function App() {
-  const [token, setToken] = useState(sessionStorage.getItem("caseconnect_token") || ""), [tab, setTab] = useState<Tab>("Overview"), [rows, setRows] = useState<Row[]>([]), [summary, setSummary] = useState<Record<string, unknown>>({}), [bureaus, setBureaus] = useState<Bureau[]>([]), [user, setUser] = useState<User | null>(null), [query, setQuery] = useState(""), [filters, setFilters] = useState({ region: "", category: "", status: "" }), [context, setContext] = useState<CaseContext | null>(null), [profile, setProfile] = useState<Profile | null>(null), [overlap, setOverlap] = useState<Row | null>(null), [error, setError] = useState(""), [notice, setNotice] = useState("");
-  const fail = (message: string) => { setNotice(""); setError(message); }; const done = (message: string) => { setError(""); setNotice(message); };
-  const load = async () => { if (!token) return; try { if (tab === "Overview" || tab === "Reports") { const p = new URLSearchParams(Object.entries(filters).filter(([, value]) => value)); setSummary(await api(`/api/analytics/summary?${p}`, { token })); setRows([]); return; } const p = new URLSearchParams(); if (query) p.set(tab === "Institutions" ? "search" : "case_id", query); if (tab === "Institutions" && filters.region) p.set("region", filters.region); const result = await api<unknown>((paths[tab] || "") + (p.size ? `?${p}` : ""), { token }); setRows(Array.isArray(result) ? result as Row[] : (result as { items?: Row[] }).items || []); } catch (x) { fail((x as Error).message); } };
-  useEffect(() => { if (token) Promise.all([api<User>("/api/auth/me", { token }), api<Bureau[]>("/api/reference/bureaus", { token })]).then(([me, directory]) => { setUser(me); setBureaus(directory); }).catch(x => { sessionStorage.removeItem("caseconnect_token"); setToken(""); fail((x as Error).message); }); }, [token]);
-  useEffect(() => { load(); }, [tab, token]);
-  const openCase = async (item: Row) => { try { setContext(await api<CaseContext>(`/api/cases/${encodeURIComponent(String(item.case_id))}/context`, { token })); } catch (x) { fail((x as Error).message); } };
-  const refresh = async () => { if (context) setContext(await api<CaseContext>(`/api/cases/${context.case.case_id}/context`, { token })); await load(); };
-  const openInstitution = async (id: number) => { try { setProfile(await api<Profile>(`/api/institutions/${id}/profile`, { token })); setContext(null); setTab("Institutions"); } catch (x) { fail((x as Error).message); } };
+  const [token, setToken] = useState(sessionStorage.getItem("caseconnect_token") || ""), [tab, setTab] = useState<Tab>("Overview"), [rows, setRows] = useState<Row[]>([]), [summary, setSummary] = useState<Record<string, unknown>>({}), [bureaus, setBureaus] = useState<Bureau[]>([]), [user, setUser] = useState<User | null>(null), [query, setQuery] = useState(""), [filters, setFilters] = useState({ region: "", category: "", status: "" }), [reportFilters, setReportFilters] = useState({ region: "", category: "", status: "" }), [reportOptions, setReportOptions] = useState<{ regions: string[]; categories: string[] }>({ regions: [], categories: [] }), [context, setContext] = useState<CaseContext | null>(null), [profile, setProfile] = useState<Profile | null>(null), [overlap, setOverlap] = useState<Row | null>(null), [error, setError] = useState(""), [notice, setNotice] = useState(""), [loading, setLoading] = useState(false);
+  const reportRequest = useRef(0), overviewRequest = useRef(0);
+  const fail = (message: string) => { if (message) { setNotice(""); setError(message); } }; const done = (message: string) => { setError(""); setNotice(message); };
+  const navigateCase = async (caseId: string, replace = false) => { try { setLoading(true); setError(""); const loaded = await api<CaseContext>(`/api/cases/${encodeURIComponent(caseId)}/context`, { token }); setContext(loaded); setProfile(null); setTab("Cases"); window.history[replace ? "replaceState" : "pushState"]({}, "", `/cases/${encodeURIComponent(caseId)}`); } catch (x) { fail((x as Error).message); setContext(null); } finally { setLoading(false); } };
+  const loadOverview = async (activeFilters = filters) => {
+    if (!token) return;
+    const request = ++overviewRequest.current;
+    try {
+      setLoading(true);
+      const params = new URLSearchParams(Object.entries(activeFilters).filter(([, value]) => value));
+      const result = await api<Record<string, unknown>>(`/api/analytics/summary?${params}`, { token });
+      if (request === overviewRequest.current) {
+        setSummary(result);
+        setRows([]);
+      }
+    } catch (x) {
+      if (request === overviewRequest.current) fail((x as Error).message);
+    } finally {
+      if (request === overviewRequest.current) setLoading(false);
+    }
+  };
+  const load = async () => {
+    if (!token) return;
+    if (tab === "Overview") {
+      await loadOverview(filters);
+      return;
+    }
+    const request = tab === "Reports" ? ++reportRequest.current : 0;
+    try {
+      setLoading(true);
+      if (tab === "Reports") {
+        const params = new URLSearchParams(Object.entries(reportFilters).filter(([, value]) => value));
+        const result = await api<Record<string, unknown>>(`/api/analytics/summary?${params}`, { token });
+        if (request === reportRequest.current) {
+          sessionStorage.setItem("caseconnect_report_filters", params.toString());
+          setSummary(result);
+          setRows([]);
+        }
+        return;
+      }
+      if (tab === "Cases") {
+        const params = new URLSearchParams({ page_size: "100" });
+        if (query) params.set("case_id", query.trim());
+        const result = await api<{ items: Case[] }>(`/api/cases?${params}`, { token });
+        setRows(result.items);
+        return;
+      }
+      const params = new URLSearchParams();
+      if (query) params.set(tab === "Institutions" ? "search" : "case_id", query);
+      if (tab === "Institutions" && filters.region) params.set("region", filters.region);
+      const result = await api<unknown>((paths[tab] || "") + (params.size ? `?${params}` : ""), { token });
+      setRows(Array.isArray(result) ? result as Row[] : (result as { items?: Row[] }).items || []);
+    } catch (x) {
+      if (request === 0 || request === reportRequest.current) fail((x as Error).message);
+    } finally {
+      if (request === 0 || request === reportRequest.current) setLoading(false);
+    }
+  };
+  useEffect(() => { if (!token) return; Promise.all([api<User>("/api/auth/me", { token }), api<Bureau[]>("/api/reference/bureaus", { token })]).then(([me, directory]) => { setUser(me); setBureaus(directory); const match = /^\/cases\/([^/]+)$/.exec(window.location.pathname); if (match) void navigateCase(decodeURIComponent(match[1]), true); }).catch(x => { sessionStorage.removeItem("caseconnect_token"); setToken(""); fail((x as Error).message); }); }, [token]);
+  useEffect(() => { if (token && !context) void load(); }, [tab, token]);
+  useEffect(() => { if (token) api<{ regions: string[]; categories: string[] }>("/api/analytics/filter-options", { token }).then(setReportOptions).catch(x => fail((x as Error).message)); }, [token]);
+  useEffect(() => { const handler = () => { const match = /^\/cases\/([^/]+)$/.exec(window.location.pathname); if (match && token) void navigateCase(decodeURIComponent(match[1]), true); else setContext(null); }; window.addEventListener("popstate", handler); return () => window.removeEventListener("popstate", handler); }, [token]);
+  const refreshContext = async () => { if (context) await navigateCase(context.case.case_id, true); await load(); };
+  const openInstitution = async (id: number) => { try { setProfile(await api<Profile>(`/api/institutions/${id}/profile`, { token })); setContext(null); setTab("Institutions"); window.history.pushState({}, "", "/"); } catch (x) { fail((x as Error).message); } };
+  const selectTab = (next: Tab) => { setTab(next); setContext(null); setProfile(null); setOverlap(null); window.history.pushState({}, "", "/"); };
   const post = async (path: string, body?: unknown) => { try { await api(path, { token, method: "POST", body: body ? JSON.stringify(body) : undefined }); done("Server confirmed the action."); await load(); } catch (x) { fail((x as Error).message); } };
-  if (!token) return <Login login={value => { sessionStorage.setItem("caseconnect_token", value); setToken(value); }} />;
-  const filtersUi = <div className="toolbar"><input placeholder="Region" value={filters.region} onChange={e => setFilters({ ...filters, region: e.target.value })} /><input placeholder="Category" value={filters.category} onChange={e => setFilters({ ...filters, category: e.target.value })} /><select value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })}><option value="">All statuses</option>{statuses.map(item => <option key={item}>{item}</option>)}</select><button onClick={load}>Apply filters</button></div>;
-  return <div className="shell"><aside><div className="brand">AICTE<br /><strong>CaseConnect</strong></div>{tabs.map(item => <button className={tab === item ? "active" : ""} onClick={() => { setTab(item); setContext(null); setProfile(null); setOverlap(null); }} key={item}>{item}</button>)}<button onClick={() => { sessionStorage.removeItem("caseconnect_token"); setToken(""); }}>Sign out</button></aside><main><header><div><p className="eyebrow">CASE MANAGEMENT / {tab.toUpperCase()}</p><h1>{tab}</h1><small>{user ? `${user.full_name} · ${user.role}` : "Loading account…"}</small></div><span className="badge">Prototype</span></header>{error && <p className="error">{error}</p>}{notice && <p className="notice">{notice}</p>}{(tab === "Overview" || tab === "Reports") && <>{filtersUi}<div className="cards">{Object.entries(summary).filter(([, value]) => typeof value === "number").map(([key, value]) => <article key={key}><p>{key.replaceAll("_", " ")}</p><strong>{String(value)}</strong></article>)}</div><div className="charts"><Chart title="Status workload" data={(summary.by_status || {}) as Record<string, number>} /><Chart title="Ageing" data={(summary.ageing || {}) as Record<string, number>} /><Chart title="Monthly received" data={(summary.monthly_trend || {}) as Record<string, number>} /></div>{tab === "Reports" && <div className="actions">{["cases.csv", "bureau-summary.csv", "region-summary.csv", "ageing.csv", "overlaps.csv"].map(file => <button key={file} onClick={() => download(`/api/analytics/${file}`, token)}>{file.replace(".csv", " export")}</button>)}</div>}</>}{tab === "Cases" && <>{!context && <CaseForm bureaus={bureaus} token={token} done={async message => { done(message); await load(); }} fail={fail} />}{context ? <CaseDetail context={context} bureaus={bureaus} token={token} back={() => { setContext(null); load(); }} refresh={refresh} fail={fail} done={done} institution={openInstitution} /> : <><div className="toolbar"><input placeholder="Exact case ID" value={query} onChange={e => setQuery(e.target.value)} /><button onClick={load}>Search</button></div><Rows rows={rows} select={openCase} /></>}</>}{tab === "Institutions" && <><div className="toolbar"><input placeholder="Search name or Permanent ID" value={query} onChange={e => setQuery(e.target.value)} /><input placeholder="Filter region" value={filters.region} onChange={e => setFilters({ ...filters, region: e.target.value })} /><button onClick={load}>Search</button></div><Rows rows={rows} select={item => openInstitution(Number(item.id))} />{profile && <section className="panel"><div className="detailhead"><div><h2>{profile.name}</h2><p>Permanent ID: {profile.permanent_id || "Not provided"} · {profile.permanent_id_verified ? "Demonstration data flag: verified" : "Not officially verified"}</p></div><button onClick={() => setProfile(null)}>Back to directory</button></div><div className="cards"><article><p>Associated cases</p><strong>{profile.total_cases}</strong></article>{Object.entries(profile.cases_by_status).map(([key, value]) => <article key={key}><p>{key}</p><strong>{value}</strong></article>)}</div><h3>Consolidated complaint history</h3><Rows rows={profile.cases} select={openCase} /><h3>Related cases and coordination</h3><Rows rows={profile.related_overlaps} /></section>}</>}{tab === "Overlaps" && <><h2>Potential Overlapping Cases — Coordination Required</h2><button onClick={() => post("/api/overlaps/refresh")}>Refresh suggestions</button><Rows rows={rows} select={setOverlap} />{overlap && <section className="panel"><p><strong>Score:</strong> {String(overlap.similarity_score)} · {String(overlap.reasons)}</p><div className="actions"><button onClick={() => post(`/api/overlaps/${overlap.id}/review`, { status: "Confirmed Related", remarks: "Confirmed after human review" })}>Confirm related</button><button onClick={() => post(`/api/overlaps/${overlap.id}/review`, { status: "Dismissed", remarks: "Dismissed after human review" })}>Dismiss</button></div></section>}</>}{tab === "Alerts" && <><button onClick={() => post("/api/monitoring/run")}>Run prototype monitor</button><AlertPanel rows={rows} token={token} refreshed={load} fail={fail} done={done} /></>}{tab === "Audit" && <Rows rows={rows} />}</main></div>;
+  if (!token) return window.location.pathname === "/" ? <Landing /> : <Login login={value => { sessionStorage.setItem("caseconnect_token", value); setToken(value); }} />;
+  if (user?.role === "Institution Representative") return <InstitutionPortal token={token} signOut={() => { sessionStorage.removeItem("caseconnect_token"); setToken(""); window.history.pushState({}, "", "/"); }} />;
+  const overviewFiltersUi = (
+    <div className="toolbar">
+      <label>
+        State / Region
+        <select
+          aria-label="State / Region"
+          value={filters.region}
+          onChange={event => setFilters({ ...filters, region: event.target.value })}
+        >
+          <option value="">All Regions</option>
+          {reportOptions.regions.map(item => (
+            <option key={item} value={item}>{item}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Category
+        <select
+          aria-label="Category"
+          value={filters.category}
+          onChange={event => setFilters({ ...filters, category: event.target.value })}
+        >
+          <option value="">All Categories</option>
+          {reportOptions.categories.map(item => (
+            <option key={item} value={item}>{item}</option>
+          ))}
+        </select>
+      </label>
+      <label>
+        Case Status
+        <select
+          aria-label="Case Status"
+          value={filters.status}
+          onChange={event => setFilters({ ...filters, status: event.target.value })}
+        >
+          <option value="">All Statuses</option>
+          <option value="Pending">Pending</option>
+          {statuses.map(item => (
+            <option key={item} value={item}>{item}</option>
+          ))}
+          <option value="Overdue">Overdue</option>
+        </select>
+      </label>
+      <button onClick={() => void loadOverview(filters)}>Apply Filters</button>
+      {(filters.region || filters.category || filters.status) && (
+        <button
+          type="button"
+          className="btn-outline"
+          onClick={() => {
+            const reset = { region: "", category: "", status: "" };
+            setFilters(reset);
+            void loadOverview(reset);
+          }}
+        >
+          Clear Filters
+        </button>
+      )}
+    </div>
+  );
+  const reportsFiltersUi = <div className="toolbar"><label>State / Region<select aria-label="State / Region" value={reportFilters.region} onChange={event => setReportFilters({ ...reportFilters, region: event.target.value })}><option value="">All Regions</option>{reportOptions.regions.map(item => <option key={item} value={item}>{item}</option>)}</select></label><label>Category<select aria-label="Category" value={reportFilters.category} onChange={event => setReportFilters({ ...reportFilters, category: event.target.value })}><option value="">All Categories</option>{reportOptions.categories.map(item => <option key={item} value={item}>{item}</option>)}</select></label><label>Case Status<select aria-label="Case Status" value={reportFilters.status} onChange={event => setReportFilters({ ...reportFilters, status: event.target.value })}><option value="">All Statuses</option><option value="Pending">Pending</option>{statuses.map(item => <option key={item}>{item}</option>)}<option value="Overdue">Overdue</option></select></label><button onClick={() => void load()}>Apply Filters</button></div>;
+  const filtersUi = tab === "Reports" ? reportsFiltersUi : overviewFiltersUi;
+  return (
+    <div className="shell">
+      <aside>
+        <div className="brand">AICTE<br /><strong>CaseConnect</strong></div>
+        {tabs.map(item => <button className={tab === item ? "active" : ""} onClick={() => selectTab(item)} key={item}>{item}</button>)}
+        <button onClick={() => { sessionStorage.removeItem("caseconnect_token"); setToken(""); window.history.pushState({}, "", "/"); }}>Sign out</button>
+      </aside>
+      <main>
+        <header>
+          <div>
+            <p className="eyebrow">CASE MANAGEMENT / {tab.toUpperCase()}</p>
+            <h1>{tab}</h1>
+            <small>{user ? `${user.full_name} · ${user.role}` : "Loading account…"}</small>
+          </div>
+          <span className="badge">Prototype</span>
+        </header>
+        {loading && <p className="loading">Loading…</p>}
+        {error && <p className="error">{error}</p>}
+        {notice && <p className="notice">{notice}</p>}
+        {(tab === "Overview" || tab === "Reports") && (
+          <>
+            {filtersUi}
+            <div className="cards">
+              {Object.entries(summary).filter(([, value]) => typeof value === "number").map(([key, value]) => (
+                <article key={key}><p>{key.replaceAll("_", " ")}</p><strong>{String(value)}</strong></article>
+              ))}
+            </div>
+            <div className="charts">
+              <Chart title="Status workload" data={(summary.by_status || {}) as Record<string, number>} />
+              <Chart title="Ageing" data={(summary.ageing || {}) as Record<string, number>} />
+              <Chart title="Monthly received" data={(summary.monthly_trend || {}) as Record<string, number>} />
+            </div>
+            {tab === "Reports" && (
+              <div className="actions">
+                {["cases.csv", "bureau-summary.csv", "region-summary.csv", "ageing.csv", "overlaps.csv"].map(file => (
+                  <button key={file} onClick={() => download(`/api/analytics/${file}`, token)}>{file.replace(".csv", " export")}</button>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+        {tab === "Cases" && (
+          context ? (
+            <CaseDetail
+              context={context}
+              token={token}
+              bureaus={bureaus}
+              back={() => { setContext(null); window.history.pushState({}, "", "/"); void load(); }}
+              reload={refreshContext}
+              openInstitution={openInstitution}
+              notice={done}
+              fail={fail}
+            />
+          ) : (
+            <>
+              <CaseForm bureaus={bureaus} token={token} fail={fail} created={item => { done(`Case ${item.case_id} was created.`); void navigateCase(item.case_id); }} />
+              <section className="panel">
+                <div className="detailhead">
+                  <div>
+                    <h2>Cases dashboard</h2>
+                    <p>Open a case by its reference or search for an exact Case ID.</p>
+                  </div>
+                </div>
+                <div className="toolbar">
+                  <input aria-label="Case ID" placeholder="Enter Case ID" value={query} onChange={event => setQuery(event.target.value)} />
+                  <button onClick={() => void load()}>Search cases</button>
+                  <button onClick={() => { setQuery(""); void load(); }}>Clear</button>
+                </div>
+                <CasesTable rows={rows as Case[]} open={caseId => void navigateCase(caseId)} />
+              </section>
+            </>
+          )
+        )}
+        {tab === "Institutions" && (
+          profile ? (
+            <section className="panel">
+              <div className="detailhead">
+                <div>
+                  <h2>{profile.name}</h2>
+                  <p>Permanent ID: {profile.permanent_id || "Not provided"} · {profile.permanent_id_verified ? "Demonstration data flag: verified" : "Not officially verified"}</p>
+                </div>
+                <button onClick={() => setProfile(null)}>Back to directory</button>
+              </div>
+              <div className="cards">
+                <article><p>Associated cases</p><strong>{profile.total_cases}</strong></article>
+                {Object.entries(profile.cases_by_status).map(([key, value]) => (
+                  <article key={key}><p>{key}</p><strong>{value}</strong></article>
+                ))}
+              </div>
+
+              <h3>Consolidated complaint history</h3>
+              {profile.cases && profile.cases.length > 0 ? (
+                <CasesTable rows={profile.cases} open={caseId => void navigateCase(caseId)} />
+              ) : (
+                <p className="empty-neutral">No associated cases recorded for this institution.</p>
+              )}
+
+              <h3>Associated Institution Accounts</h3>
+              {profile.accounts && profile.accounts.length > 0 ? (
+                <div className="table">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Full Name</th>
+                        <th>Email Address</th>
+                        <th>Role</th>
+                        <th>Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {profile.accounts.map(acc => (
+                        <tr key={acc.id}>
+                          <td><strong>{acc.full_name}</strong></td>
+                          <td>{acc.email}</td>
+                          <td><span className="badge">{acc.role}</span></td>
+                          <td><span className="badge badge-resolved">{acc.is_active ? "Active" : "Inactive"}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="empty-neutral">No institution accounts are associated with this institution.</p>
+              )}
+
+              <h3>Related overlap records</h3>
+              {profile.related_overlaps && profile.related_overlaps.length > 0 ? (
+                <Rows rows={profile.related_overlaps} />
+              ) : (
+                <p className="empty-neutral">No related overlap records for this institution.</p>
+              )}
+
+              <h3>Related coordination requests</h3>
+              {profile.related_coordination && profile.related_coordination.length > 0 ? (
+                <Rows rows={profile.related_coordination} />
+              ) : (
+                <p className="empty-neutral">No related coordination requests for this institution.</p>
+              )}
+            </section>
+          ) : (
+            <section className="panel">
+              <div className="detailhead">
+                <div>
+                  <h2>Institutions Directory</h2>
+                  <p>Search institutions by name or Permanent ID (e.g. DEMO-AICTE-0003), or filter by region.</p>
+                </div>
+              </div>
+              <div className="toolbar">
+                <input
+                  placeholder="Search name or Permanent ID"
+                  value={query}
+                  onChange={event => setQuery(event.target.value)}
+                />
+                <select
+                  aria-label="Filter Region"
+                  value={filters.region}
+                  onChange={event => setFilters({ ...filters, region: event.target.value })}
+                >
+                  <option value="">All Regions</option>
+                  {reportOptions.regions.map(r => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+                <button onClick={() => void load()}>Search</button>
+                {(query || filters.region) && (
+                  <button
+                    type="button"
+                    className="btn-outline"
+                    onClick={() => {
+                      setQuery("");
+                      setFilters({ ...filters, region: "" });
+                      void load();
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <Rows
+                rows={rows}
+                select={item => void openInstitution(Number(item.id))}
+                emptyMessage="No institutions match this search."
+              />
+            </section>
+          )
+        )}
+        {tab === "Overlaps" && (
+          <>
+            <h2>Potential overlapping cases — human review required</h2>
+            <button onClick={() => void post("/api/overlaps/refresh")}>Refresh suggestions</button>
+            <Rows rows={rows} select={setOverlap} />
+            {overlap && (
+              <section className="panel">
+                <p><strong>Score:</strong> {String(overlap.similarity_score)} · {String(overlap.reasons)}</p>
+                <div className="actions">
+                  <button onClick={() => void post(`/api/overlaps/${overlap.id}/review`, { status: "Confirmed Related", remarks: "Confirmed after human review" })}>Confirm related</button>
+                  <button onClick={() => void post(`/api/overlaps/${overlap.id}/review`, { status: "Dismissed", remarks: "Dismissed after human review" })}>Dismiss</button>
+                </div>
+              </section>
+            )}
+          </>
+        )}
+        {tab === "Alerts" && (
+          <>
+            <button onClick={() => void post("/api/monitoring/run")}>Run prototype monitor</button>
+            <AlertPanel rows={rows} token={token} refresh={load} notice={done} fail={fail} emptyMessage="No accessible alerts recorded." />
+          </>
+        )}
+        {tab === "Audit" && <Rows rows={rows} />}
+      </main>
+    </div>
+  );
 }

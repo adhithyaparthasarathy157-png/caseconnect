@@ -86,7 +86,7 @@ def seed() -> None:
                 institution, bureau, officer, subject = institutions[0], bureau_by_code["PGRC"], user_by_email["pgrc.officer@demo.example.com"], "Unrelated hostel sanitation concern"
             created = today - timedelta(days=index * 2)
             case = Case(case_id=f"CC-{today.year}-{index:05d}", external_reference=f"SYN-{index:04d}", institution_id=institution.id,
-                        receipt_at=created, source_channel=["Portal", "Email", "Regional Office", "Helpline"][index % 4],
+                        receipt_at=created, receipt_date=created.date(), source_channel=["Portal", "Email", "Regional Office", "Helpline"][index % 4],
                         category=["Approval", "Grievance", "Infrastructure", "Faculty"][index % 4], subcategory="Synthetic category",
                         subject=subject, description=f"{NOTICE}. Detailed fictional complaint narrative {index}.", priority=priorities[index % 4],
                         originating_bureau_id=bureau.id, current_bureau_id=bureau.id, assigned_officer_id=officer.id, status=status_value,

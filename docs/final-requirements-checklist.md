@@ -30,20 +30,24 @@ contains 20 tests; see `docs/block4-verification.md` for exact evidence.
 | PostgreSQL service verification | BLOCKED | PostgreSQL is configurable but no server or credentials were supplied. |
 | Pagination for large institution directories | PARTIAL — optional | Current synthetic 20-record directory has API-backed search/filters; pagination remains a scalability enhancement. |
 | Continuous scheduler/email/SMS delivery | PARTIAL — optional/external | Explicit monitor API is tested. Production scheduling and delivery credentials are external deployment work. |
+| Institution User Portal & role-scoped isolation | PASS | Landing page routing (`/` with Admin/Institution login), server-side institution assignment without client forgery, 14 isolated portal tests passed. |
 
 ## Block 5 final update
 
-- 22 isolated backend tests were collected and passed in serial groups: 7 API,
-  8 Blocks 2–3, and 7 Block 4/isolation tests.
+- 42 isolated backend tests collected and passed in serial groups: 16 in Group 1 (`test_api.py`, `test_block2.py`), 12 in Group 2 (`test_block3.py`, `test_block4.py`, `test_isolation.py`), and 14 in Group 3 (`test_portal.py`).
 - Coordination and alert controls retain confirmed API responses after mutation.
-- Institution profiles now return scoped related coordination records alongside
-  overlap records. Browser-click automation remains unavailable.
+- Institution profiles return scoped related coordination records alongside overlap records.
+- Institution User Portal is connected with server-side authorized scoping and clean timeline rendering. Browser-click automation remains unavailable.
 
 ## Final executed test coverage
 
-- 21 tests collected after the independent audit added transfer-integrity coverage.
-- 10 passed: `tests/test_api.py` and `tests/test_block2.py`.
-- 8 passed: `tests/test_block3.py` and `tests/test_isolation.py`.
-- One upstream Starlette TestClient deprecation warning occurred in each normal regression run; no normal regression test failed.
+- 42 total tests collected and verified across 6 test modules:
+  - `tests/test_api.py` (7 tests)
+  - `tests/test_block2.py` (9 tests)
+  - `tests/test_block3.py` (5 tests)
+  - `tests/test_block4.py` (4 tests)
+  - `tests/test_isolation.py` (3 tests)
+  - `tests/test_portal.py` (14 tests)
+- 42 passed in serial runs with zero failures; only expected upstream Starlette TestClient deprecation warnings.
 - A separate deliberate failure probe was executed to verify test cleanup. Its failure was expected and is documented in [block3-verification.md](block3-verification.md).
 - Independent Blocks 1–4 audit evidence: [blocks1-4-audit-report.md](blocks1-4-audit-report.md).

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -50,8 +50,10 @@ class User(Base, Timestamped):
     role: Mapped[Role] = mapped_column(Enum(Role), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     bureau_id: Mapped[int | None] = mapped_column(ForeignKey("bureaus.id"), index=True)
+    institution_id: Mapped[int | None] = mapped_column(ForeignKey("institutions.id"), index=True)
     region_scope: Mapped[str | None] = mapped_column(String(255), comment="Comma-separated regions or ALL")
     bureau: Mapped[Bureau | None] = relationship(back_populates="users")
+    institution: Mapped["Institution | None"] = relationship(foreign_keys=[institution_id])
 
 
 class Institution(Base, Timestamped):
@@ -78,12 +80,19 @@ class Institution(Base, Timestamped):
 
 class Case(Base, Timestamped):
     __tablename__ = "cases"
-    __table_args__ = (Index("ix_cases_status_bureau", "status", "current_bureau_id"), Index("ix_cases_receipt_date", "receipt_at"))
+    __table_args__ = (
+        Index("ix_cases_status_bureau", "status", "current_bureau_id"),
+        Index("ix_cases_receipt_date", "receipt_at"),
+        Index("ix_cases_receipt_date_only", "receipt_date"),
+    )
     id: Mapped[int] = mapped_column(primary_key=True)
     case_id: Mapped[str] = mapped_column(String(40), unique=True, index=True)
     external_reference: Mapped[str | None] = mapped_column(String(120), index=True)
     institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
     receipt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    # `receipt_at` is retained for historical compatibility. New API writes use
+    # this separate date-only field; no receipt time is collected from users.
+    receipt_date: Mapped[date] = mapped_column(nullable=False)
     source_channel: Mapped[str] = mapped_column(String(100))
     category: Mapped[str] = mapped_column(String(100), index=True)
     subcategory: Mapped[str | None] = mapped_column(String(100))
@@ -151,6 +160,22 @@ class OverlapCandidate(Base, Timestamped):
     def institution_name(self) -> str | None:
         return self.case_low.institution.name if self.case_low and self.case_low.institution else None
 
+    @property
+    def case_low_bureau_id(self) -> int | None:
+        return self.case_low.current_bureau_id if self.case_low else None
+
+    @property
+    def case_high_bureau_id(self) -> int | None:
+        return self.case_high.current_bureau_id if self.case_high else None
+
+    @property
+    def is_cross_bureau(self) -> bool:
+        return bool(
+            self.case_low
+            and self.case_high
+            and self.case_low.current_bureau_id != self.case_high.current_bureau_id
+        )
+
 
 class CoordinationRequest(Base, Timestamped):
     """A human-created, advisory cross-bureau request linked to an overlap."""
@@ -193,6 +218,10 @@ class Alert(Base, Timestamped):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     resolved_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     case: Mapped[Case | None] = relationship(foreign_keys=[case_id])
+
+    @property
+    def case_reference(self) -> str | None:
+        return self.case.case_id if self.case else None
 
 
 class AuditEvent(Base):

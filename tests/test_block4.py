@@ -59,7 +59,7 @@ def test_cross_bureau_coordination_is_persisted_authorized_and_audited(client, s
 def test_case_context_and_workflow_reference_data_are_scoped(client, setup_data):
     admin = token(client, "admin@test.example.com")
     created = client.post("/api/cases", headers=admin, json={
-        "institution_id": setup_data["institution"], "receipt_at": "2026-10-27T10:00:00Z",
+        "institution_id": setup_data["institution"], "receipt_date": "2026-10-27",
         "source_channel": "Portal", "category": "Approval", "subject": "Synthetic context workflow case",
         "description": "A sufficiently detailed synthetic context workflow description.",
         "originating_bureau_id": setup_data["rb"], "expected_disposal_date": "2026-10-30T10:00:00Z",
@@ -79,7 +79,7 @@ def test_case_context_and_workflow_reference_data_are_scoped(client, setup_data)
 def test_same_bureau_transfer_is_rejected_without_case_or_history_change(client, setup_data):
     admin = token(client, "admin@test.example.com")
     created = client.post("/api/cases", headers=admin, json={
-        "institution_id": setup_data["institution"], "receipt_at": "2026-10-27T10:00:00Z",
+        "institution_id": setup_data["institution"], "receipt_date": "2026-10-27",
         "source_channel": "Portal", "category": "Approval", "subject": "Synthetic transfer integrity case",
         "description": "A sufficiently detailed synthetic transfer integrity description.",
         "originating_bureau_id": setup_data["rb"],
@@ -98,7 +98,7 @@ def test_same_bureau_transfer_is_rejected_without_case_or_history_change(client,
 def test_alert_actions_are_authorized_persistent_and_idempotent(client, setup_data):
     admin = token(client, "admin@test.example.com")
     created = client.post("/api/cases", headers=admin, json={
-        "institution_id": setup_data["institution"], "receipt_at": "2026-10-27T10:00:00Z",
+        "institution_id": setup_data["institution"], "receipt_date": "2026-10-27",
         "source_channel": "Portal", "category": "Approval", "subject": "Synthetic alert lifecycle case",
         "description": "A sufficiently detailed synthetic alert lifecycle description.",
         "originating_bureau_id": setup_data["rb"],

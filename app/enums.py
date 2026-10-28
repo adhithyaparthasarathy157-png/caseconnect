@@ -9,6 +9,7 @@ class Role(StrEnum):
     REGIONAL_OFFICER = "Regional Office Officer"
     SENIOR_MANAGEMENT = "Senior Management"
     COMPETENT_AUTHORITY = "Competent Authority"
+    INSTITUTION_REPRESENTATIVE = "Institution Representative"
 
 
 class CaseStatus(StrEnum):

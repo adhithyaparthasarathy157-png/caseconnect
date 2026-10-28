@@ -69,3 +69,39 @@ def test_filtered_analytics_and_safe_csv_exports(client, setup_data):
     for endpoint in ("cases.csv", "bureau-summary.csv", "region-summary.csv", "ageing.csv", "overlaps.csv"):
         response = client.get(f"/api/analytics/{endpoint}", headers=headers)
         assert response.status_code == 200
+
+
+def test_report_filter_options_statuses_and_filtered_exports(client, setup_data):
+    headers = token(client, "admin@test.example.com")
+    under_process = case_payload(setup_data)
+    under_process.update({"category": "Reporting", "subject": "Under process reporting case"})
+    created = client.post("/api/cases", json=under_process, headers=headers).json()
+    assert client.patch(f"/api/cases/{created['case_id']}", headers=headers, json={"status": "Under Review", "remarks": "Initial review"}).status_code == 200
+    assert client.patch(f"/api/cases/{created['case_id']}", headers=headers, json={"status": "Under Process", "remarks": "Processing"}).status_code == 200
+
+    disposed = case_payload({**setup_data, "institution": setup_data["south_institution"]})
+    disposed.update({"category": "Reporting", "subject": "Disposed reporting case"})
+    disposed_case = client.post("/api/cases", json=disposed, headers=headers).json()
+    assert client.patch(f"/api/cases/{disposed_case['case_id']}", headers=headers, json={"status": "Under Review", "remarks": "Review"}).status_code == 200
+    assert client.patch(f"/api/cases/{disposed_case['case_id']}", headers=headers, json={"status": "Under Process", "remarks": "Process"}).status_code == 200
+    assert client.patch(f"/api/cases/{disposed_case['case_id']}", headers=headers, json={"status": "Disposed", "remarks": "Disposed"}).status_code == 200
+
+    options = client.get("/api/analytics/filter-options", headers=headers)
+    assert options.status_code == 200
+    assert {"North", "South"} <= set(options.json()["regions"])
+    assert "Reporting" in options.json()["categories"]
+
+    combined = client.get("/api/analytics/summary", params={"region": "North", "category": "Reporting", "status": "Under Process"}, headers=headers)
+    assert combined.status_code == 200
+    assert combined.json()["total_received"] == combined.json()["under_process"] == 1
+    assert sum(combined.json()["by_status"].values()) == combined.json()["total_received"]
+    assert client.get("/api/analytics/summary", params={"status": "Pending"}, headers=headers).json()["total_received"] == 1
+    assert client.get("/api/analytics/summary", params={"region": "North", "category": "Reporting", "status": "Disposed"}, headers=headers).json()["total_received"] == 0
+    assert client.get("/api/analytics/summary", params={"region": "North", "category": "NoSuchCategory"}, headers=headers).json()["total_received"] == 0
+
+    export = client.get("/api/analytics/cases.csv", params={"region": "North", "category": "Reporting", "status": "Under Process"}, headers=headers)
+    assert export.status_code == 200
+    assert created["case_id"] in export.text
+    assert disposed_case["case_id"] not in export.text
+    north_options = client.get("/api/analytics/filter-options", headers=token(client, "north@test.example.com"))
+    assert north_options.status_code == 200 and north_options.json()["regions"] == ["North"]

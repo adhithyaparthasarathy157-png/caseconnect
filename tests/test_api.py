@@ -53,7 +53,7 @@ def token(client: TestClient, email: str) -> dict[str, str]:
 
 
 def case_payload(data: dict[str, int]) -> dict:
-    return {"institution_id": data["institution"], "receipt_at": datetime.now(UTC).isoformat(), "source_channel": "Portal", "category": "Approval", "subject": "A sufficiently detailed synthetic subject", "description": "A sufficiently detailed fictional complaint description.", "originating_bureau_id": data["rb"], "expected_disposal_date": datetime.now(UTC).isoformat()}
+    return {"institution_id": data["institution"], "receipt_date": datetime.now(UTC).date().isoformat(), "source_channel": "Portal", "category": "Approval", "subject": "A sufficiently detailed synthetic subject", "description": "A sufficiently detailed fictional complaint description.", "originating_bureau_id": data["rb"], "expected_disposal_date": datetime.now(UTC).isoformat()}
 
 
 def test_health_auth_and_institution_uniqueness(client, setup_data):
@@ -77,6 +77,68 @@ def test_case_creation_filters_history_and_transition_validation(client, setup_d
     invalid = client.patch(f"/api/cases/{case_id}", json={"status": "Disposed"}, headers=admin_headers)
     assert invalid.status_code == 422
     assert client.get(f"/api/cases/{case_id}/history", headers=admin_headers).json()[0]["action_type"] == "created"
+
+
+@pytest.mark.parametrize("description", ["test", "ok"])
+def test_case_creation_accepts_short_nonempty_descriptions_and_persists(client, setup_data, description):
+    headers = token(client, "admin@test.example.com")
+    payload = case_payload(setup_data)
+    payload.update({"description": description, "receipt_date": "2026-10-27"})
+
+    created = client.post("/api/cases", json=payload, headers=headers)
+
+    assert created.status_code == 201
+    case_id = created.json()["case_id"]
+    assert created.json()["description"] == description
+    assert created.json()["receipt_date"] == "2026-10-27"
+    persisted = client.get(f"/api/cases/{case_id}", headers=headers)
+    assert persisted.status_code == 200
+    assert persisted.json()["description"] == description
+
+
+def test_case_creation_rejects_blank_or_missing_or_invalid_receipt_fields(client, setup_data):
+    headers = token(client, "admin@test.example.com")
+    blank_description = case_payload(setup_data)
+    blank_description["description"] = "   "
+    response = client.post("/api/cases", json=blank_description, headers=headers)
+    assert response.status_code == 422
+    assert response.json()["error"]["message"] == "Description is required"
+
+    missing_receipt = case_payload(setup_data)
+    del missing_receipt["receipt_date"]
+    assert client.post("/api/cases", json=missing_receipt, headers=headers).status_code == 422
+
+    invalid_receipt = case_payload(setup_data)
+    invalid_receipt["receipt_date"] = "not-a-date"
+    assert client.post("/api/cases", json=invalid_receipt, headers=headers).status_code == 422
+
+    datetime_receipt = case_payload(setup_data)
+    datetime_receipt["receipt_date"] = "2026-10-27T10:22:00Z"
+    assert client.post("/api/cases", json=datetime_receipt, headers=headers).status_code == 422
+
+
+def test_case_creation_preserves_date_only_receipt_boundaries(client, setup_data):
+    headers = token(client, "admin@test.example.com")
+    payload = case_payload(setup_data)
+    payload["receipt_date"] = "2024-02-29"
+    payload["expected_disposal_date"] = "2024-03-01"
+    created = client.post("/api/cases", json=payload, headers=headers)
+    assert created.status_code == 201
+    assert created.json()["receipt_date"] == "2024-02-29"
+    found = client.get("/api/cases", params={"receipt_from": "2024-02-29", "receipt_to": "2024-02-29"}, headers=headers)
+    assert found.status_code == 200
+    assert any(item["case_id"] == created.json()["case_id"] for item in found.json()["items"])
+
+
+def test_case_description_update_accepts_short_nonempty_text(client, setup_data):
+    headers = token(client, "admin@test.example.com")
+    created = client.post("/api/cases", json=case_payload(setup_data), headers=headers)
+    assert created.status_code == 201
+
+    updated = client.patch(f"/api/cases/{created.json()['case_id']}", json={"description": "ok"}, headers=headers)
+
+    assert updated.status_code == 200
+    assert updated.json()["description"] == "ok"
 
 
 def test_bureau_restrictions_and_history_persist(client, setup_data):

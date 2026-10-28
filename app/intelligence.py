@@ -41,7 +41,7 @@ def _score(left: Case, right: Case) -> tuple[int, bool, list[str]]:
     if left.current_bureau_id != right.current_bureau_id:
         score += 5
         reasons.append("Involves different current bureaus")
-    days = abs((left.receipt_at - right.receipt_at).days)
+    days = abs((left.receipt_date - right.receipt_date).days)
     if days <= 30:
         score += 5
         reasons.append("Received within 30 days")

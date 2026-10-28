@@ -53,6 +53,36 @@ production database.
 
 All `/api` routes require a bearer token except `/api/auth/token`.
 
+## Portals & Demo Accounts
+
+The application features a landing page (`/`) offering two entry points:
+
+1. **Admin Portal** (`/admin/login` or via `/`):
+   - For administrators and AICTE officers managing cases, bureau transfers, overlaps, alerts, reports, and audit trails.
+   - Demo credentials: `admin@demo.example.com` / `DemoPass!2026`
+
+2. **Institution User Portal** (`/institution/login` or via `/`):
+   - For authorized institution representatives. Scoped strictly to applications, alerts, and details belonging to their linked institution.
+   - Server-side isolation prevents viewing or mutating cases from other institutions.
+   - Submissions automatically resolve institution assignment and originating bureau server-side.
+   - Demo credentials: `institution.rep@demo.example.com` / `InstitutionDemo!2026` (linked to `DEMO-AICTE-0001` / *Fictional North Institute of Technology 01*).
+
+### Institution Portal APIs
+
+- `GET /api/portal/overview`: Institution-scoped counts (total applications, under review, action required) and recent applications.
+- `GET /api/portal/applications`: Institution-scoped application list with optional `case_id` search.
+- `GET /api/portal/applications/{case_id}`: Detail view for an application with event timeline, institution profile, and alerts.
+- `GET /api/portal/alerts`: Alerts specific to the representative's institution cases.
+- `GET /api/portal/institution`: Profile of the representative's linked institution.
+
+### Case receipt date
+
+New cases use a required date-only `receipt_date` value (`YYYY-MM-DD`) rather
+than a receipt timestamp. The user interface displays it as `DD-MM-YYYY`; the
+historical `receipt_at` timestamp remains in the database only for legacy
+reporting compatibility. Direct local case links use
+`http://127.0.0.1:5173/cases/{case_id}` after authentication.
+
 ## Frontend
 
 ```powershell

@@ -11,3 +11,4 @@ __pycache__/
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
+frontend/.env.development.local
