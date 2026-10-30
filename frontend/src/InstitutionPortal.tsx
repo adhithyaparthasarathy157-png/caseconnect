@@ -11,6 +11,16 @@ type ApplicationDetail = { case: Application; institution: Row; history: History
 type DocumentRow = { case_id: string; category: string; external_reference: string; submission_date: string; status: string; document_type: string; access_tier: string };
 type PortalTab = "Overview" | "My Applications" | "Submit Application" | "Alerts & Action Required" | "Documents" | "Institution Profile";
 
+type ScreeningFailure = {
+  criterion_id: string;
+  failure_category: string;
+  extracted_evidence: string;
+  expected: string;
+  actual: string;
+  explanation: string;
+  suggested_correction: string;
+};
+
 export function InstitutionPortal({ token, signOut }: { token: string; signOut: () => void }) {
   const [tab, setTab] = useState<PortalTab>("Overview"),
     [overview, setOverview] = useState<Row>({}),
@@ -23,7 +33,12 @@ export function InstitutionPortal({ token, signOut }: { token: string; signOut: 
     [statusFilter, setStatusFilter] = useState(""),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(false),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState(""),
+    [screeningResult, setScreeningResult] = useState<{
+      outcome: string;
+      explanation: string;
+      failures: ScreeningFailure[];
+    } | null>(null);
 
   const fail = (message: string) => { setNotice(""); setError(message); };
   const done = (message: string) => { setError(""); setNotice(message); };
@@ -86,8 +101,73 @@ export function InstitutionPortal({ token, signOut }: { token: string; signOut: 
     if (!get("description")) return setError("Application details are required.");
     try {
       const receipt_date = dateOnlyForApi(get("receipt_date"), "Submission Date");
-      setLoading(true); setError("");
-      // Institution scope and originating bureau are resolved server-side from the authenticated session
+      setLoading(true); setError(""); setScreeningResult(null);
+
+      // Pre-fetch institution permanent ID if not loaded
+      let currentInst = institution;
+      if (!currentInst) {
+        currentInst = await api<Row>("/api/portal/institution", { token });
+        setInstitution(currentInst);
+      }
+      const permanentId = String(currentInst?.permanent_id || "");
+
+      // Execute AI Pre-Scrutiny Intake Screening (Supporting both JSON and Real File Uploads)
+      let screening: {
+        screening_outcome: string;
+        outcome_explanation: string;
+        failures?: ScreeningFailure[];
+      };
+
+      const fileInput = form.querySelector('input[type="file"]') as HTMLInputElement;
+      if (fileInput && fileInput.files && fileInput.files.length > 0) {
+        const fd = new FormData();
+        fd.append("permanent_id", permanentId);
+        fd.append("subject", get("subject"));
+        fd.append("description", get("description"));
+        fd.append("category", get("category"));
+        fd.append("incident_date", receipt_date);
+        for (let i = 0; i < fileInput.files.length; i++) {
+          fd.append("files", fileInput.files[i]);
+        }
+        const res = await fetch("http://127.0.0.1:8000/api/ai/screen-with-documents", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: fd,
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.detail || body.error?.message || "Screening failed");
+        }
+        screening = await res.json();
+      } else {
+        screening = await api<{
+          screening_outcome: string;
+          outcome_explanation: string;
+          failures?: ScreeningFailure[];
+        }>("/api/ai/screen-submission", {
+          token, method: "POST",
+          body: JSON.stringify({
+            permanent_id: permanentId,
+            subject: get("subject"),
+            description: get("description"),
+            category: get("category"),
+            incident_date: receipt_date,
+          }),
+        });
+      }
+
+      if (screening.screening_outcome !== "PASSED") {
+        setScreeningResult({
+          outcome: screening.screening_outcome,
+          explanation: screening.outcome_explanation,
+          failures: screening.failures || [],
+        });
+        setError(`AI Pre-Scrutiny flagged issues (${screening.screening_outcome}). Review the analysis below.`);
+        setLoading(false);
+        return;
+      }
+
+      // If screening passes, register application
       const created = await api<Application>("/api/cases", {
         token, method: "POST",
         body: JSON.stringify({
@@ -99,8 +179,9 @@ export function InstitutionPortal({ token, signOut }: { token: string; signOut: 
           description: get("description"),
         }),
       });
-      done(`Application ${created.case_id} was submitted successfully.`);
+      done(`? AI Pre-Scrutiny Passed! Application ${created.case_id} registered successfully.`);
       form.reset();
+      setScreeningResult(null);
       await open(created.case_id);
     } catch (x) { fail((x as Error).message); } finally { setLoading(false); }
   };
@@ -133,7 +214,7 @@ export function InstitutionPortal({ token, signOut }: { token: string; signOut: 
           <span className="badge">Institution Rep</span>
         </header>
 
-        {loading && <p className="loading">Loading…</p>}
+        {loading && <p className="loading">Loading?</p>}
         {error && <p className="error">{error}</p>}
         {notice && <p className="notice">{notice}</p>}
 
@@ -161,7 +242,7 @@ export function InstitutionPortal({ token, signOut }: { token: string; signOut: 
                     {(overview.recent_activity as HistoryEvent[]).map(ev => (
                       <tr key={ev.id}>
                         <td><span className="badge">{ev.action_type.replaceAll("_", " ")}</span></td>
-                        <td>{ev.remarks || "—"}</td>
+                        <td>{ev.remarks || "?"}</td>
                         <td>{String(ev.created_at).slice(0, 16).replace("T", " ")}</td>
                       </tr>
                     ))}
@@ -215,15 +296,64 @@ export function InstitutionPortal({ token, signOut }: { token: string; signOut: 
         {tab === "Submit Application" && (
           <form className="panel formgrid" onSubmit={submit} noValidate>
             <div className="formtitle">
-              <h2>Submit Application</h2>
-              <p>The server automatically associates this submission with your authorized institution account.</p>
+              <h2>Submit Application / Grievance</h2>
+              <p>Submissions undergo automated AI pre-scrutiny intake checks before formal registration.</p>
             </div>
+            {screeningResult && (
+              <div className="wide" style={{
+                background: screeningResult.outcome === "REJECTED_AT_INTAKE" ? "#fff5f5" : "#fffbeb",
+                border: `1px solid ${screeningResult.outcome === "REJECTED_AT_INTAKE" ? "#feb2b2" : "#fbd38d"}`,
+                borderRadius: 8,
+                padding: 16,
+                marginBottom: 16,
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <h3 style={{ margin: 0, color: screeningResult.outcome === "REJECTED_AT_INTAKE" ? "#c53030" : "#b7791f" }}>
+                    {screeningResult.outcome === "REJECTED_AT_INTAKE" ? "? AI Intake Pre-Scrutiny: Rejection" : "?? AI Intake Pre-Scrutiny: Correction Required"}
+                  </h3>
+                  <span className="badge">{screeningResult.outcome}</span>
+                </div>
+                <p style={{ margin: "4px 0 12px 0", fontSize: 14 }}>{screeningResult.explanation}</p>
+                {screeningResult.failures.length > 0 && (
+                  <div>
+                    <strong>Flagged Criteria ({screeningResult.failures.length}):</strong>
+                    <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                      {screeningResult.failures.map((f, i) => (
+                        <div key={i} style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 6, padding: 10 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                            <strong>{f.criterion_id.replaceAll("_", " ")}</strong>
+                            <code style={{ fontSize: 12, color: "#c53030" }}>{f.failure_category}</code>
+                          </div>
+                          <p style={{ margin: "2px 0", fontSize: 13 }}><strong>Extracted Evidence:</strong> {f.extracted_evidence}</p>
+                          <p style={{ margin: "2px 0", fontSize: 13 }}><strong>Explanation:</strong> {f.explanation}</p>
+                          {f.suggested_correction && (
+                            <p style={{ margin: "4px 0 0 0", fontSize: 13, color: "#276749" }}>
+                              <strong>Suggested Correction:</strong> {f.suggested_correction}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <p style={{ fontSize: 12, color: "#718096", marginTop: 12, marginBottom: 0 }}>
+                  Please address the flagged items in the form below and resubmit.
+                </p>
+              </div>
+            )}
             <label>Submission Date *<input name="receipt_date" type="date" required /></label>
-            <label>Subject *<input name="subject" minLength={4} placeholder="Brief subject of the application" required /></label>
-            <label>Category *<input name="category" defaultValue="Application" required /></label>
+            <label>Subject *<input name="subject" minLength={10} placeholder="Clear, specific subject (min 10 characters)" required /></label>
+            <label>Category *
+              <select name="category" defaultValue="Academic" required>
+                {["Academic", "Financial", "Infrastructure", "Faculty", "Accreditation", "Affiliation", "Admission", "Conduct", "Examination", "Other"].map(c => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </label>
             <label>Source Channel *<input name="source_channel" defaultValue="Institution Portal" required /></label>
-            <label className="wide">Application Details &amp; Justification *<textarea name="description" rows={4} required /></label>
-            <button disabled={loading}>{loading ? "Submitting…" : "Submit Application"}</button>
+            <label className="wide">Upload Evidence Document (PDF, Image, Text)<input name="evidence_file" type="file" /><small>Attach official fee receipt, circular, appointment order, or representation proof for AI intake validation.</small></label>
+            <label className="wide">Application / Grievance Details *<textarea name="description" rows={5} placeholder="Provide complete factual details (minimum 20 words for AI screening intake compliance)..." required /></label>
+            <button disabled={loading}>{loading ? "Checking with AI & Submitting?" : "Submit with Pre-Scrutiny"}</button>
           </form>
         )}
 
@@ -242,7 +372,7 @@ export function InstitutionPortal({ token, signOut }: { token: string; signOut: 
                       ) : item.case_id ? (
                         <code>Case #{String(item.case_id)}</code>
                       ) : (
-                        "—"
+                        "?"
                       )}
                     </td>
                     <td>{String(item.created_at).slice(0, 10)}</td>
@@ -288,13 +418,13 @@ export function InstitutionPortal({ token, signOut }: { token: string; signOut: 
             <div className="cards">
               <article><p>Institution ID</p><strong>{String(institution.id)}</strong></article>
               <article><p>Permanent ID</p><strong>{String(institution.permanent_id || "Not provided")}</strong></article>
-              <article><p>Region</p><strong>{String(institution.region || "—")}</strong></article>
-              <article><p>Status</p><strong>{String(institution.status || "—")}</strong></article>
+              <article><p>Region</p><strong>{String(institution.region || "?")}</strong></article>
+              <article><p>Status</p><strong>{String(institution.status || "?")}</strong></article>
             </div>
             <p style={{ marginTop: 20 }}>
               <small>
                 This profile is bound to your authorized login. Institution details are managed by the AICTE Regional Bureau.
-                Synthetic demonstration data only — not official AICTE records.
+                Synthetic demonstration data only ? not official AICTE records.
               </small>
             </p>
           </section>
@@ -397,7 +527,7 @@ function ApplicationDetailView({
           />
           <div style={{ marginTop: 8 }}>
             <button disabled={submitting}>
-              {submitting ? "Submitting Response…" : "Submit Clarification to AICTE"}
+              {submitting ? "Submitting Response?" : "Submit Clarification to AICTE"}
             </button>
           </div>
         </form>
@@ -410,7 +540,7 @@ function ApplicationDetailView({
           <tbody>{detail.history.map(event => (
             <tr key={event.id}>
               <td><span className="badge">{event.action_type.replaceAll("_", " ")}</span></td>
-              <td>{event.remarks || "—"}</td>
+              <td>{event.remarks || "?"}</td>
               <td>{String(event.created_at).slice(0, 16).replace("T", " ")}</td>
             </tr>
           ))}</tbody>

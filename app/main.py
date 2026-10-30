@@ -11,12 +11,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.config import get_settings
 from app.database import SessionLocal
 from app.routers import (
+    ai,
     alerts,
     analytics,
     audit,
     auth,
     cases,
     coordination,
+    document_intelligence,
     institutions,
     monitoring,
     overlaps,
@@ -45,6 +47,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth.router)
+app.include_router(ai.router)
 app.include_router(institutions.router)
 app.include_router(cases.router)
 app.include_router(reference.router)
@@ -55,6 +58,7 @@ app.include_router(analytics.router)
 app.include_router(monitoring.router)
 app.include_router(audit.router)
 app.include_router(portal.router)
+app.include_router(document_intelligence.router)
 
 
 @app.get("/", tags=["system"])
@@ -69,7 +73,17 @@ def root() -> dict[str, str]:
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
-    details = exc.errors()
+    def _sanitize(obj: object) -> object:
+        """Recursively replace non-JSON-serializable values (e.g. bytes) with strings."""
+        if isinstance(obj, bytes):
+            return obj.decode("utf-8", errors="replace")
+        if isinstance(obj, dict):
+            return {k: _sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize(v) for v in obj]
+        return obj
+
+    details = _sanitize(exc.errors())
     message = details[0]["msg"] if details else "Validation failed"
     return JSONResponse(status_code=422, content={"error": {"code": "validation_error", "message": message, "details": details}})
 

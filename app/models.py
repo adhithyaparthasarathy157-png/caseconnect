@@ -6,8 +6,10 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -234,3 +236,109 @@ class AuditEvent(Base):
     details: Mapped[dict | None] = mapped_column(JSON)
     remarks: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class DocumentAnalysis(Base, Timestamped):
+    __tablename__ = "document_analyses"
+    __table_args__ = (
+        Index("ix_doc_analyses_case_id", "case_numeric_id"),
+        Index("ix_doc_analyses_institution_id", "institution_id"),
+        Index("ix_doc_analyses_status", "pre_scrutiny_status"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    case_numeric_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), index=True)
+    case_id: Mapped[str] = mapped_column(String(40), index=True)
+    institution_id: Mapped[int] = mapped_column(ForeignKey("institutions.id"), index=True)
+    document_type: Mapped[str] = mapped_column(String(100), index=True)
+    input_source: Mapped[str] = mapped_column(String(50), default="manual_ocr")
+    fixture_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ocr_text: Mapped[str] = mapped_column(Text)
+    ocr_text_snippet: Mapped[str] = mapped_column(String(500))
+    extracted_fields: Mapped[dict] = mapped_column(JSON, default=dict)
+    field_evidence: Mapped[dict] = mapped_column(JSON, default=dict)
+    findings: Mapped[list] = mapped_column(JSON, default=list)
+    classification_confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    top_alternatives: Mapped[list] = mapped_column(JSON, default=list)
+    classification_method: Mapped[str] = mapped_column(String(100))
+    model_name: Mapped[str] = mapped_column(String(100))
+    analysis_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    parent_analysis_id: Mapped[int | None] = mapped_column(ForeignKey("document_analyses.id"), nullable=True)
+    pre_scrutiny_status: Mapped[str] = mapped_column(String(50), index=True)
+    recommended_action: Mapped[str] = mapped_column(String(500))
+    requires_human_review: Mapped[bool] = mapped_column(Boolean, default=False)
+    generated_deficiency_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Relationships
+    case: Mapped[Case] = relationship(foreign_keys=[case_numeric_id])
+    institution: Mapped[Institution] = relationship(foreign_keys=[institution_id])
+    parent_analysis: Mapped["DocumentAnalysis | None"] = relationship(remote_side=[id], backref="child_analyses")
+    reviews: Mapped[list["DocumentAnalysisReview"]] = relationship(
+        back_populates="analysis",
+        cascade="all, delete-orphan",
+        order_by="DocumentAnalysisReview.created_at",
+    )
+
+
+class DocumentAnalysisReview(Base, Timestamped):
+    __tablename__ = "document_analysis_reviews"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    analysis_id: Mapped[int] = mapped_column(ForeignKey("document_analyses.id"), index=True)
+    reviewer_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    review_action: Mapped[str] = mapped_column(String(50))  # "confirm", "dismiss_finding", "edit_finding", "manual_verify", "approve_correction"
+    reviewer_comments: Mapped[str | None] = mapped_column(Text, nullable=True)
+    finding_updates: Mapped[list] = mapped_column(JSON, default=list)
+    final_review_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    analysis: Mapped[DocumentAnalysis] = relationship(back_populates="reviews")
+    reviewer: Mapped[User | None] = relationship(foreign_keys=[reviewer_user_id])
+
+
+
+class ComplaintSubmission(Base, Timestamped):
+    """
+    Complaint submission from institution representative, screened BEFORE case registration.
+    Stays separate from cases until screening PASSES and admin registers the case.
+    """
+    __tablename__ = "complaint_submissions"
+    __table_args__ = (
+        Index("ix_submissions_institution_id", "institution_id"),
+        Index("ix_submissions_status", "screening_status"),
+        Index("ix_submissions_permanent_id", "permanent_id_submitted"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    submission_ref: Mapped[str] = mapped_column(String(20), unique=True, index=True)
+    institution_id: Mapped[int | None] = mapped_column(ForeignKey("institutions.id"), nullable=True, index=True)
+    permanent_id_submitted: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    subject: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    incident_date: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    contact_info: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    previous_complaint_ref: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # Screening state
+    screening_status: Mapped[str] = mapped_column(String(50), default="PENDING", nullable=False)
+    screening_outcome: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    screening_outcome_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    admin_override: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    admin_override_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    admin_override_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    admin_override_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Resubmission tracking
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    parent_submission_id: Mapped[int | None] = mapped_column(ForeignKey("complaint_submissions.id"), nullable=True)
+    # Source
+    submitted_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    is_synthetic_demo: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    demo_scenario_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    expected_demo_outcome: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # Case registration (if screening passes and admin registers)
+    registered_case_id: Mapped[int | None] = mapped_column(ForeignKey("cases.id"), nullable=True)
+
+    institution: Mapped["Institution | None"] = relationship(foreign_keys=[institution_id])
+    submitted_by: Mapped["User | None"] = relationship(foreign_keys=[submitted_by_id])
+    admin_override_user: Mapped["User | None"] = relationship(foreign_keys=[admin_override_by_id])
+    registered_case: Mapped["Case | None"] = relationship(foreign_keys=[registered_case_id])
+    parent_submission: Mapped["ComplaintSubmission | None"] = relationship(
+        remote_side=[id], foreign_keys=[parent_submission_id], backref="resubmissions"
+    )
