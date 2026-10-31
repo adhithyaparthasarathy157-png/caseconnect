@@ -75,6 +75,11 @@ def create_case(db: Session, payload: CaseCreate, actor: User) -> Case:
                 next_action=payload.next_action, expected_disposal_date=payload.expected_disposal_date)
     db.add(case)
     db.flush()
+    try:
+        from app.sla.tracking import create_sla_record_for_case
+        create_sla_record_for_case(db, case, actor=actor)
+    except Exception:
+        pass
     append_event(db, case, actor, ActionType.CREATED, "Case created", new={"status": case.status.value})
     audit(db, actor, "case", case.case_id, "case_created")
     db.commit()
@@ -101,8 +106,13 @@ def update_case(db: Session, case: Case, payload: CaseUpdate, actor: User) -> Ca
     previous = {key: getattr(case, key).value if hasattr(getattr(case, key), "value") else getattr(case, key) for key in changes}
     for key, value in changes.items():
         setattr(case, key, value)
-    if "status" in changes and changes["status"] == CaseStatus.CLOSED:
+    if "status" in changes and changes["status"] in {CaseStatus.DISPOSED, CaseStatus.CLOSED}:
         case.closure_date = now()
+        try:
+            from app.sla.tracking import complete_sla
+            complete_sla(db, case, actor=actor)
+        except Exception:
+            pass
     if changes:
         case.last_action = payload.remarks or "Case updated"
         case.last_action_at = now()
@@ -149,8 +159,13 @@ def apply_action(db: Session, case: Case, payload: CaseActionCreate, actor: User
         assert_transition(case.status, payload.status)
         previous = {"status": case.status.value}
         case.status = payload.status
-        if case.status == CaseStatus.CLOSED:
+        if case.status in {CaseStatus.DISPOSED, CaseStatus.CLOSED}:
             case.closure_date = now()
+            try:
+                from app.sla.tracking import complete_sla
+                complete_sla(db, case, actor=actor)
+            except Exception:
+                pass
         new = {"status": case.status.value}
     elif payload.action_type != ActionType.NOTE:
         raise HTTPException(status_code=422, detail="Unsupported workflow action")

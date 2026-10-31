@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -24,17 +25,78 @@ from app.routers import (
     overlaps,
     portal,
     reference,
+    sla,
 )
 
 logging.basicConfig(level=get_settings().log_level, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("caseconnect")
 
+# Module-level flag so tests can verify the task was registered
+_sla_scheduler_task: asyncio.Task | None = None  # type: ignore[type-arg]
+
+
+async def _sla_background_evaluator(interval_seconds: int) -> None:
+    """
+    Periodic background task that runs the SLA evaluator on all active complaint records.
+
+    Runs immediately on startup, then repeats every ``interval_seconds`` seconds.
+    The task is cancellation-safe: a CancelledError from the event loop causes a clean exit.
+    """
+    # Deferred import to avoid circular import chains at module load time
+    from app.sla.evaluator import evaluate_all_active  # noqa: PLC0415
+
+    logger.info("SLA background evaluator started — interval %ds", interval_seconds)
+    while True:
+        try:
+            with SessionLocal() as db:
+                result = evaluate_all_active(db)
+            logger.info(
+                "SLA evaluation complete: evaluated=%s warnings=%s at_risk=%s breached=%s escalations=%s",
+                result.get("evaluated", 0),
+                result.get("warnings", 0),
+                result.get("at_risk", 0),
+                result.get("breached", 0),
+                result.get("escalations_created", 0),
+            )
+        except asyncio.CancelledError:
+            logger.info("SLA background evaluator stopping")
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("SLA background evaluator encountered an error; will retry at next interval")
+
+        try:
+            await asyncio.sleep(interval_seconds)
+        except asyncio.CancelledError:
+            logger.info("SLA background evaluator stopping")
+            raise
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global _sla_scheduler_task  # noqa: PLW0603
+    settings = get_settings()
     logger.info("CaseConnect starting")
-    yield
-    logger.info("CaseConnect stopping")
+
+    interval = settings.sla_eval_interval_minutes * 60
+    if interval > 0:
+        _sla_scheduler_task = asyncio.create_task(
+            _sla_background_evaluator(interval),
+            name="sla-background-evaluator",
+        )
+        logger.info("SLA background evaluator scheduled every %d minutes", settings.sla_eval_interval_minutes)
+    else:
+        logger.info("SLA background evaluator disabled (SLA_EVAL_INTERVAL_MINUTES=0)")
+
+    try:
+        yield
+    finally:
+        if _sla_scheduler_task and not _sla_scheduler_task.done():
+            _sla_scheduler_task.cancel()
+            try:
+                await _sla_scheduler_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("CaseConnect stopping")
 
 
 app = FastAPI(title="AICTE CaseConnect API", version="0.1.0", lifespan=lifespan)
@@ -59,6 +121,7 @@ app.include_router(monitoring.router)
 app.include_router(audit.router)
 app.include_router(portal.router)
 app.include_router(document_intelligence.router)
+app.include_router(sla.router)
 
 
 @app.get("/", tags=["system"])

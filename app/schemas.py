@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from pydantic_core import PydanticCustomError
@@ -330,3 +331,4 @@ class CaseContext(BaseModel):
     overlaps: list[OverlapPublic]
     alerts: list[AlertPublic]
     coordination: list[CoordinationPublic]
+    sla: dict[str, Any] | None = None

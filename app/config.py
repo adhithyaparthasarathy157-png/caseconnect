@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
     log_level: str = "INFO"
+    # SLA background evaluator interval. Set to 0 to disable automatic scheduling.
+    sla_eval_interval_minutes: int = 15
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

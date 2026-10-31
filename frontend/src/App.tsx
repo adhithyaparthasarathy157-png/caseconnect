@@ -3,8 +3,9 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { api, download } from "./api";
 import { dateOnlyForApi, formatDateOnly, formatDateTime } from "./dateTime";
 import { InstitutionPortal } from "./InstitutionPortal";
+import { CaseSlaPanel, SlaManagementPage } from "./SlaManagement";
 
-type Tab = "Overview" | "Cases" | "Institutions" | "Overlaps" | "Alerts" | "Reports" | "Audit" | "AI Screening";
+type Tab = "Overview" | "Cases" | "Institutions" | "Overlaps" | "Alerts" | "Reports" | "Audit" | "AI Screening" | "SLA Management";
 type Row = Record<string, unknown>;
 type Bureau = { id: number; code: string; name: string };
 type User = { id: number; full_name: string; email?: string; role: string; is_active?: boolean; bureau_id: number | null; institution_id: number | null };
@@ -12,7 +13,7 @@ type Case = Row & { id: number; case_id: string; institution_id: number; current
 type CaseContext = { case: Case; history: Row[]; overlaps: Row[]; alerts: Row[]; coordination: Row[] };
 type Profile = Row & { id: number; name: string; permanent_id?: string | null; permanent_id_verified: boolean; total_cases: number; cases_by_status: Record<string, number>; cases: Case[]; related_overlaps: Row[]; related_coordination: Row[]; accounts?: User[] };
 
-const tabs: Tab[] = ["Overview", "Cases", "Institutions", "Overlaps", "Alerts", "Reports", "Audit", "AI Screening"];
+const tabs: Tab[] = ["Overview", "Cases", "Institutions", "Overlaps", "Alerts", "Reports", "Audit", "AI Screening", "SLA Management"];
 const paths: Partial<Record<Tab, string>> = { Institutions: "/api/institutions", Overlaps: "/api/overlaps", Alerts: "/api/alerts", Audit: "/api/audit-events" };
 const statuses = ["Received", "Under Review", "Under Process", "Pending Institution Response", "Transferred", "Escalated", "Disposed", "Closed"];
 const today = () => {
@@ -752,6 +753,8 @@ function CaseDetail({ context, token, bureaus, back, reload, openInstitution, no
           <button>Transfer</button>
         </form>
       </div>
+      <h3>SLA & Pendency Tracking</h3>
+      <CaseSlaPanel caseId={c.case_id} token={token} notice={notice} fail={fail} reload={reload} />
       <h3>Timeline / workflow history</h3>
       <TimelineTable events={context.history} />
       <h3>AI Case Insights</h3>
@@ -1773,6 +1776,7 @@ export function App() {
         )}
         {tab === "Audit" && <Rows rows={rows} />}
         {tab === "AI Screening" && <AiScreeningPage token={token} notice={done} fail={fail} />}
+        {tab === "SLA Management" && <SlaManagementPage token={token} notice={done} fail={fail} selectCase={caseId => { void navigateCase(caseId); }} bureaus={bureaus} />}
       </main>
     </div>
   );

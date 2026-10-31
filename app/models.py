@@ -26,6 +26,8 @@ from app.enums import (
     OverlapStatus,
     Priority,
     Role,
+    SlaCalendarType,
+    SlaStatus,
 )
 
 
@@ -115,6 +117,7 @@ class Case(Base, Timestamped):
     current_bureau: Mapped[Bureau] = relationship(foreign_keys=[current_bureau_id])
     assigned_officer: Mapped[User | None] = relationship(foreign_keys=[assigned_officer_id])
     history: Mapped[list["CaseEvent"]] = relationship(back_populates="case", cascade="all, delete-orphan", order_by="CaseEvent.created_at")
+    sla_record: Mapped["CaseSlaRecord | None"] = relationship(back_populates="case", uselist=False, cascade="all, delete-orphan")
 
 
 class CaseEvent(Base):
@@ -342,3 +345,157 @@ class ComplaintSubmission(Base, Timestamped):
     parent_submission: Mapped["ComplaintSubmission | None"] = relationship(
         remote_side=[id], foreign_keys=[parent_submission_id], backref="resubmissions"
     )
+
+
+class SlaPolicy(Base, Timestamped):
+    __tablename__ = "sla_policies"
+    __table_args__ = (
+        Index("ix_sla_policies_category_priority", "category", "priority"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    category: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    priority: Mapped[Priority | None] = mapped_column(Enum(Priority), nullable=True)
+    bureau_id: Mapped[int | None] = mapped_column(ForeignKey("bureaus.id"), nullable=True, index=True)
+    target_duration_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    calendar_type: Mapped[SlaCalendarType] = mapped_column(Enum(SlaCalendarType), default=SlaCalendarType.CALENDAR_DAYS, nullable=False)
+    warning_threshold_pct: Mapped[float] = mapped_column(Float, default=75.0, nullable=False)
+    at_risk_threshold_pct: Mapped[float] = mapped_column(Float, default=90.0, nullable=False)
+    escalation_config: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+    bureau: Mapped[Bureau | None] = relationship(foreign_keys=[bureau_id])
+    created_by: Mapped[User | None] = relationship(foreign_keys=[created_by_id])
+    updated_by: Mapped[User | None] = relationship(foreign_keys=[updated_by_id])
+    versions: Mapped[list["SlaPolicyVersion"]] = relationship(
+        back_populates="policy",
+        cascade="all, delete-orphan",
+        order_by="SlaPolicyVersion.version.desc()",
+    )
+
+
+class SlaPolicyVersion(Base):
+    __tablename__ = "sla_policy_versions"
+    __table_args__ = (
+        UniqueConstraint("policy_id", "version", name="uq_sla_policy_version"),
+    )
+    id: Mapped[int] = mapped_column(primary_key=True)
+    policy_id: Mapped[int] = mapped_column(ForeignKey("sla_policies.id"), nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    changed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    change_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    policy: Mapped[SlaPolicy] = relationship(back_populates="versions")
+    changed_by: Mapped[User | None] = relationship(foreign_keys=[changed_by_id])
+
+
+class CaseSlaRecord(Base, Timestamped):
+    __tablename__ = "case_sla_records"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), unique=True, nullable=False, index=True)
+    case_ref: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    policy_id: Mapped[int] = mapped_column(ForeignKey("sla_policies.id"), nullable=False, index=True)
+    policy_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    start_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    original_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    current_deadline: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    target_duration_days: Mapped[int] = mapped_column(Integer, nullable=False)
+    calendar_type: Mapped[str] = mapped_column(String(50), default="calendar_days", nullable=False)
+    status: Mapped[str] = mapped_column(String(50), default="ON_TRACK", nullable=False, index=True)
+    elapsed_duration_hours: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    remaining_duration_hours: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    consumed_percentage: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    accumulated_paused_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_paused: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    current_pause_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_within_sla: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    actual_duration_hours: Mapped[float | None] = mapped_column(Float, nullable=True)
+    escalation_level: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    last_evaluated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    case: Mapped[Case] = relationship(back_populates="sla_record")
+    policy: Mapped[SlaPolicy] = relationship(foreign_keys=[policy_id])
+    pauses: Mapped[list["SlaPause"]] = relationship(
+        back_populates="sla_record",
+        cascade="all, delete-orphan",
+        order_by="SlaPause.paused_at.desc()",
+    )
+    escalations: Mapped[list["SlaEscalation"]] = relationship(
+        back_populates="sla_record",
+        cascade="all, delete-orphan",
+        order_by="SlaEscalation.created_at.desc()",
+    )
+    events: Mapped[list["SlaEvent"]] = relationship(
+        back_populates="sla_record",
+        cascade="all, delete-orphan",
+        order_by="SlaEvent.created_at.desc()",
+    )
+
+
+class SlaPause(Base):
+    __tablename__ = "sla_pauses"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sla_record_id: Mapped[int] = mapped_column(ForeignKey("case_sla_records.id"), nullable=False, index=True)
+    paused_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    paused_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    pause_reason: Mapped[str] = mapped_column(String(120), nullable=False)
+    pause_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resumed_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    resume_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    sla_record: Mapped[CaseSlaRecord] = relationship(back_populates="pauses")
+    paused_by: Mapped[User] = relationship(foreign_keys=[paused_by_id])
+    resumed_by: Mapped[User | None] = relationship(foreign_keys=[resumed_by_id])
+
+
+class SlaEscalation(Base):
+    __tablename__ = "sla_escalations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    sla_record_id: Mapped[int] = mapped_column(ForeignKey("case_sla_records.id"), nullable=False, index=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), nullable=False, index=True)
+    escalation_level: Mapped[int] = mapped_column(Integer, nullable=False)
+    trigger_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    previous_authority_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    new_authority_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    target_bureau_id: Mapped[int | None] = mapped_column(ForeignKey("bureaus.id"), nullable=True)
+    target_role: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    acknowledged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    acknowledged_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    sla_record: Mapped[CaseSlaRecord] = relationship(back_populates="escalations")
+    case: Mapped[Case] = relationship(foreign_keys=[case_id])
+    previous_authority: Mapped[User | None] = relationship(foreign_keys=[previous_authority_id])
+    new_authority: Mapped[User | None] = relationship(foreign_keys=[new_authority_id])
+    target_bureau: Mapped[Bureau | None] = relationship(foreign_keys=[target_bureau_id])
+    acknowledged_by: Mapped[User | None] = relationship(foreign_keys=[acknowledged_by_id])
+
+
+class SlaEvent(Base):
+    __tablename__ = "sla_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    sla_record_id: Mapped[int] = mapped_column(ForeignKey("case_sla_records.id"), nullable=False, index=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(60), nullable=False, index=True)
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    previous_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    new_state: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    remarks: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    sla_record: Mapped[CaseSlaRecord] = relationship(back_populates="events")
+    case: Mapped[Case] = relationship(foreign_keys=[case_id])
+    actor: Mapped[User | None] = relationship(foreign_keys=[actor_id])
+

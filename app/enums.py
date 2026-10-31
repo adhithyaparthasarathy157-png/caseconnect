@@ -59,3 +59,18 @@ class AlertSeverity(StrEnum):
     INFO = "Info"
     WARNING = "Warning"
     CRITICAL = "Critical"
+
+
+class SlaStatus(StrEnum):
+    ON_TRACK = "ON_TRACK"
+    WARNING = "WARNING"
+    AT_RISK = "AT_RISK"
+    BREACHED = "BREACHED"
+    PAUSED = "PAUSED"
+    COMPLETED = "COMPLETED"
+
+
+class SlaCalendarType(StrEnum):
+    CALENDAR_DAYS = "calendar_days"
+    BUSINESS_DAYS = "business_days"
+

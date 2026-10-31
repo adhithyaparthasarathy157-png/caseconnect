@@ -166,6 +166,13 @@ def generate_intelligence_summary(db: Session) -> dict[str, Any]:
             "affected_count": escalated_count,
         })
 
+    sla_risk_summary = None
+    try:
+        from app.sla.risk import get_risk_dashboard
+        sla_risk_summary = get_risk_dashboard(db)
+    except Exception:
+        pass
+
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "model_type": "rule_based",
@@ -176,12 +183,14 @@ def generate_intelligence_summary(db: Session) -> dict[str, Any]:
             "unread_critical_alerts": critical_alerts,
             "escalated_cases": escalated_count,
             "institutions_with_increased_activity": len(high_activity),
+            "high_sla_risk_cases": (sla_risk_summary.get("critical_count", 0) + sla_risk_summary.get("high_risk_count", 0)) if sla_risk_summary else 0,
         },
         "status_distribution": status_dist,
         "priority_distribution": priority_dist,
         "overdue_cases": overdue[:10],  # Top 10 overdue
         "high_activity_institutions": high_activity,
         "bureau_pendency": bureau_pendency,
+        "sla_risk_summary": sla_risk_summary,
         "recommended_actions": recommended_actions,
     }
 

@@ -50,3 +50,36 @@
 .btn-outline:hover { background: #eaf1fa; }
 .coordination-subpanel { margin-top: 14px; padding: 16px; background: #f8fafc; border: 1px solid #d5e2f0; border-radius: 8px; }
 .coordination-actions { display: flex; gap: 8px; align-items: center; }
+
+/* SLA Engine Badges & Styling */
+.badge-sla-on-track { background: #dcfce7; color: #15803d; border: 1px solid #bbf7d0; font-weight: 700; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+.badge-sla-warning { background: #fef3c7; color: #b45309; border: 1px solid #fde68a; font-weight: 700; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+.badge-sla-at-risk { background: #ffedd5; color: #c2410c; border: 1px solid #fed7aa; font-weight: 700; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+.badge-sla-breached { background: #fee2e2; color: #b91c1c; border: 1px solid #fecaca; font-weight: 700; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+.badge-sla-paused { background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; font-weight: 700; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+.badge-sla-completed { background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; font-weight: 700; font-size: 11px; padding: 3px 8px; border-radius: 4px; }
+
+.badge-risk-low { background: #dcfce7; color: #166534; font-weight: 700; font-size: 11px; padding: 2px 7px; border-radius: 4px; }
+.badge-risk-medium { background: #fef9c3; color: #854d0e; font-weight: 700; font-size: 11px; padding: 2px 7px; border-radius: 4px; }
+.badge-risk-high { background: #ffedd5; color: #9a3412; font-weight: 700; font-size: 11px; padding: 2px 7px; border-radius: 4px; }
+.badge-risk-critical { background: #fee2e2; color: #991b1b; font-weight: 700; font-size: 11px; padding: 2px 7px; border-radius: 4px; }
+
+.sla-progress-track { width: 100%; height: 10px; background: #e2e8f0; border-radius: 5px; overflow: hidden; margin: 6px 0; }
+.sla-progress-fill { height: 100%; transition: width 0.3s ease; border-radius: 5px; }
+
+.sla-subnav { display: flex; gap: 8px; border-bottom: 2px solid #e2e8f0; padding-bottom: 12px; margin-bottom: 18px; flex-wrap: wrap; }
+.sla-subnav button { background: #f1f5f9; color: #334155; font-size: 13px; padding: 8px 14px; border-radius: 6px; }
+.sla-subnav button:hover { background: #e2e8f0; }
+.sla-subnav button.active { background: #1e63b7; color: #ffffff; }
+
+.sla-kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 18px; }
+.sla-kpi-card { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; text-align: left; }
+.sla-kpi-card p { margin: 0; font-size: 12px; color: #64748b; font-weight: 600; text-transform: uppercase; }
+.sla-kpi-card strong { font-size: 24px; color: #0f172a; display: block; margin-top: 4px; }
+
+.sla-modal-overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.6); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 20px; }
+.sla-modal-box { background: #ffffff; border-radius: 12px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; padding: 24px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1); }
+.sla-modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; border-bottom: 1px solid #e2e8f0; padding-bottom: 12px; }
+.sla-modal-header h3 { margin: 0; font-size: 18px; color: #0f172a; }
+.sla-modal-close { background: transparent; color: #64748b; font-size: 18px; padding: 4px 8px; cursor: pointer; }
+.sla-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }

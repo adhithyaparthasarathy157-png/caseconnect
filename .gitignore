@@ -5,7 +5,12 @@ __pycache__/
 .ruff_cache/
 .env
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+.pytest-caseconnect.db*
 *.log
+backups/
 
 # Frontend dependencies and generated output
 frontend/node_modules/

@@ -32,5 +32,14 @@ def run_monitor(db: Session, warning_days: int = 7) -> dict[str, int]:
             create_alert(db, key=f"pending-action:{case.id}", alert_type="pending_action", severity=AlertSeverity.INFO,
                          title="Pending action needs assignment", message="A next action exists but no officer is assigned.", case=case)
     overlaps = refresh_overlaps(db)
+    sla_stats = {}
+    try:
+        from app.sla.evaluator import evaluate_all_active
+        sla_stats = evaluate_all_active(db)
+    except Exception:
+        pass
     db.commit()
-    return {"deadline_candidates": len(cases), "alerts_considered": created, "overlaps_refreshed": overlaps}
+    res = {"deadline_candidates": len(cases), "alerts_considered": created, "overlaps_refreshed": overlaps}
+    if sla_stats:
+        res["sla_evaluated"] = sla_stats.get("evaluated", 0)
+    return res
